@@ -1,0 +1,21 @@
+/node_modules
+/.next/
+/out/
+.DS_Store
+.env*
+*.tsbuildinfo
+next-env.d.ts
+__pycache__/
+
+# runtime data: rounds and votes are the owner's preference data
+/data/
+
+# synthesized speech for arena lines (the owner's cloned voice)
+/public/audio/
+
+# the avatar with the Mixamo clips baked in: deployed, never redistributed (see THIRD_PARTY.md)
+/public/assets/*.glb
+
+# generated motion and model outputs
+/outputs/
+/models/
