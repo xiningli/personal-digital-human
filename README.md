@@ -14,8 +14,12 @@ npm install
 npm run dev                       # http://<host>:3020/arena
 ```
 
-Speech comes from the voice studio's service on `127.0.0.1:8010` (`bash backend/run.sh`
-in `~/personal-voice-clone-studio`, with a prepared neutral profile). Without it a round
+Speech comes from a voice service: the studio's backend on this machine
+(`bash backend/run.sh` in `~/personal-voice-clone-studio`), or a bundle the studio's
+**Export** tab pushed to another host — set `STUDIO_TTS_URL` in `.env.local` (this
+checkout uses `http://p520:8010`, a resident service on the owner's second machine, so this
+card's memory stays free). The arena asks the service for its reference clips
+(`GET /v1/profiles`) and never needs the studio's files. Without a ready service a round
 cannot be drawn and the page says so.
 
 ## What a round is

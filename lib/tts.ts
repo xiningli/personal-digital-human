@@ -26,12 +26,26 @@ export const EMOTION_INSTRUCT: Record<string, string> = {
 export const EMOTION_FOR_CATEGORY: Record<string, string> = { greeting: "warm", answer: "curious", explaining: "neutral", thinking: "curious", delight: "happy" };
 
 interface Profile { id: string; emotion?: string; language?: string; promptAudioPath?: string; promptText?: string }
+interface ServedProfile { id: string; emotion?: string; wav: string; promptText?: string }
 
+/**
+ * The neutral reference clip as a path on the machine that runs the voice service. The
+ * service says which clips it has (`GET /v1/profiles`, present on the studio and on every
+ * exported bundle); the studio's local data file is the fallback for an older service.
+ */
 export async function neutralProfile(): Promise<{ wav: string; text: string }> {
+  try {
+    const r = await fetch(`${STUDIO_URL}/v1/profiles`, { cache: "no-store" });
+    if (r.ok) {
+      const served = (await r.json()) as ServedProfile[];
+      const p = served.find((x) => x.emotion === "neutral") ?? served[0];
+      if (p?.wav) return { wav: p.wav, text: p.promptText ?? "" };
+    }
+  } catch { /* fall through to the local file */ }
   const file = path.join(STUDIO_ROOT, "data", "voice-profiles.json");
   const profiles = JSON.parse(await fs.readFile(file, "utf-8")) as Profile[];
   const p = profiles.find((x) => x.emotion === "neutral" && x.promptAudioPath) ?? profiles.find((x) => x.promptAudioPath);
-  if (!p?.promptAudioPath) throw new Error("the voice studio has no prepared profile");
+  if (!p?.promptAudioPath) throw new Error("the voice service has no prepared profile");
   return { wav: path.join(STUDIO_ROOT, "public", p.promptAudioPath.replace(/^\/+/, "")), text: p.promptText ?? "" };
 }
 
@@ -48,7 +62,7 @@ export async function speak(text: string, emotion: string, seed = 7): Promise<{ 
   const { wav, text: promptText } = await neutralProfile();
   const instruct = EMOTION_INSTRUCT[emotion] ?? EMOTION_INSTRUCT.neutral;
   const health = await studioHealth();
-  if (!health.reachable || !health.ready) throw new Error("the voice studio is not ready (bash backend/run.sh in personal-voice-clone-studio)");
+  if (!health.reachable || !health.ready) throw new Error(`the voice service at ${STUDIO_URL} is not ready`);
   const voiceModel = health.model ?? "unknown";
   const key = crypto.createHash("sha1").update([voiceModel, wav, instruct, String(seed), text].join("|")).digest("hex").slice(0, 16);
   const file = path.join(AUDIO_DIR, `${key}.wav`);
