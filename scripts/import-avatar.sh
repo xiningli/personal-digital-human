@@ -15,3 +15,8 @@ elif [ -f "$SITE/public/assets/model.glb" ]; then
 else
   echo "no avatar found under $SITE/public/assets" >&2; exit 1
 fi
+
+# The Blender retargeting that produces this asset does not guarantee well-formed rotation
+# keyframes (see clean-avatar-animations.mjs for what was found and why this belongs here,
+# once, rather than patched around at playback time): clean every import automatically.
+node scripts/clean-avatar-animations.mjs public/assets/model-clips.glb
