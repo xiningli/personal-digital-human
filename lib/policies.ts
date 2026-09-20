@@ -5,7 +5,11 @@
 
 import type { MotionPolicy } from "./types";
 
-export const SPEAKING_CLIPS = ["Talking", "Telling A Secret"] as const;
+// "Telling A Secret" was dropped on 2026-09-19: it is a conspiratorial hunch, weight on one
+// foot and a hand cupped at the mouth, which reads as the body floating and is wrong for a
+// digital human answering a question. "Lengthy Head Nod" gestures with its hands while
+// nodding, so it stays as the second thing a speaking body can do; the arena ranks the two.
+export const SPEAKING_CLIPS = ["Talking", "Lengthy Head Nod"] as const;
 /** The clips the served asset carries; the renderer reports which it actually found. */
 export const KNOWN_CLIPS = ["Breathing Idle", "Head Nod Yes", "Idle", "Lengthy Head Nod", "Shrugging", "Talking", "Telling A Secret", "Thoughtful Head Nod", "Waving"] as const;
 
@@ -20,20 +24,27 @@ function name(clip: string | null, h: number, b: number, s: number): string {
   return `${body} · ${parts.join(", ")}`;
 }
 
-/** Every policy the sampler can draw: 2 clips + the procedural body, times the amplitude grid. */
+/**
+ * Every policy the sampler can draw: the speaking clips across the amplitude grid, plus a
+ * single procedural-body baseline.
+ *
+ * Until 2026-09-19 the procedural body took the whole grid too, so 27 of 47 policies were the
+ * hand-written body and most rounds pitted two of its variants against each other. It is the
+ * weakest candidate and only ships as the fallback for an avatar with no clips, so exactly one
+ * of it remains, to answer "is a clip better than the fallback" and nothing more.
+ */
 export function designSpace(): MotionPolicy[] {
   const out: MotionPolicy[] = [];
-  const bodies: (string | null)[] = [...SPEAKING_CLIPS, null];
-  for (const clip of bodies) {
+  for (const clip of SPEAKING_CLIPS) {
     for (const h of LEVELS.headLift) for (const b of LEVELS.beats) for (const s of LEVELS.sway) {
       // With a clip underneath, beats move arms the clip already moves; keep beats off there
       // except at the site default, so the grid stays small and the arms are not doubled.
-      if (clip !== null && b > 0 && !(h === 1 && b === 1 && s === 1)) continue;
-      const source = clip === null ? "procedural" : "clip";
-      const key = `${clip === null ? "proc" : `clip:${clip}`}/h${h}-b${b}-s${s}`;
-      out.push({ id: key, name: name(clip, h, b, s), source, clip, headLift: h, beats: b, sway: s, ease: 1 });
+      if (b > 0 && !(h === 1 && b === 1 && s === 1)) continue;
+      const key = `clip:${clip}/h${h}-b${b}-s${s}`;
+      out.push({ id: key, name: name(clip, h, b, s), source: "clip", clip, headLift: h, beats: b, sway: s, ease: 1 });
     }
   }
+  out.push({ id: "proc/h1-b1-s1", name: name(null, 1, 1, 1) + " (fallback baseline)", source: "procedural", clip: null, headLift: 1, beats: 1, sway: 1, ease: 1 });
   return out;
 }
 

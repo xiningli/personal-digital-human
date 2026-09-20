@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { v4 as uuid } from "uuid";
 import { getArenaRounds, getArenaVotes, saveArenaRound } from "@/lib/storage";
-import { LINE_BANK, pickLine, samplePair } from "@/lib/policies";
+import { LINE_BANK, designSpace, pickLine, samplePair } from "@/lib/policies";
 import { EMOTION_FOR_CATEGORY, speak } from "@/lib/tts";
 import type { ArenaCandidate, ArenaRound, TrialType } from "@/lib/types";
 
@@ -20,7 +20,14 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as { category?: string; trial?: TrialType; repeatOf?: string };
   const [rounds, votes] = await Promise.all([getArenaRounds(), getArenaVotes()]);
   const decided = new Set(votes.map((v) => v.roundId));
-  const repeatable = rounds.filter((r) => r.trial === "test" && decided.has(r.id) && !rounds.some((x) => x.repeatOf === r.id));
+  // A repeat measures the rater, so it must re-serve candidates that are still on the table.
+  // Rounds built from policies since withdrawn from the design space are skipped, or a retired
+  // candidate keeps coming back and the reliability number is about something we no longer ship.
+  const live = new Set(designSpace().map((p) => p.id));
+  const repeatable = rounds.filter(
+    (r) => r.trial === "test" && decided.has(r.id) && !rounds.some((x) => x.repeatOf === r.id)
+      && r.candidates.every((c) => live.has(c.policyId)),
+  );
   let trial: TrialType = body.trial ?? (Math.random() < REPEAT_SHARE && repeatable.length ? "repeat" : "test");
   let source: ArenaRound | undefined;
   if (body.repeatOf) { source = rounds.find((r) => r.id === body.repeatOf); trial = "repeat"; }

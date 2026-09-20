@@ -7,10 +7,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { BEAT_S, EASE_S, HEAD_BONES, POSE_BONES, gestures, pose, speechFace, wantsBeat, type Beat, type Pose, type Triple } from "@/lib/pose";
+import { BEAT_S, EASE_S, HEAD_BONES, POSE_BONES, applyRestPose, gestures, pose, speechFace, wantsBeat, type Beat, type Pose, type Triple } from "@/lib/pose";
 import type { Mood, MotionPolicy } from "@/lib/types";
 
-const ARM_DOWN = 1.25;
 const FADE = 0.35;
 
 interface Props {
@@ -26,8 +25,7 @@ interface Props {
 }
 
 function relax(model: THREE.Object3D) {
-  const set = (name: string, x: number) => { const b = model.getObjectByName(name); if (b) b.rotation.x = x; };
-  set("LeftArm", ARM_DOWN); set("RightArm", ARM_DOWN); set("LeftForeArm", 0.22); set("RightForeArm", 0.22);
+  applyRestPose((name) => model.getObjectByName(name) as unknown as { rotation: { set(x: number, y: number, z: number): void } } | undefined);
 }
 
 export default function MotionStage({ policy, avatar, level, playing, seed, label, onClips }: Props) {
@@ -46,12 +44,26 @@ export default function MotionStage({ policy, avatar, level, playing, seed, labe
     let disposed = false;
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 40);
     camera.position.set(0, 1.34, 4.35);
     camera.lookAt(0, 1.02, 0);
     scene.add(new THREE.AmbientLight(0xd5f0ff, 0.85));
     const key = new THREE.DirectionalLight(0xd6f5ff, 1.5); key.position.set(-2, 4, 5); scene.add(key);
+    // A floor that is invisible except where the body shadows it. Without a contact shadow the
+    // feet have nothing to stand on and the whole figure reads as floating (owner, 2026-09-19).
+    key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.camera.top = 3; key.shadow.camera.bottom = -1;
+    key.shadow.camera.left = -2; key.shadow.camera.right = 2;
+    key.shadow.camera.near = 0.5; key.shadow.camera.far = 12;
+    key.shadow.bias = -0.0015;
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(6, 6), new THREE.ShadowMaterial({ opacity: 0.45 }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
     const warm = new THREE.DirectionalLight(0xd7c2a0, 1.1); warm.position.set(3, 1, 2); scene.add(warm);
     const rim = new THREE.DirectionalLight(0x9fd8e8, 1.4); rim.position.set(0, 2.5, -4); scene.add(rim);
 
@@ -91,6 +103,7 @@ export default function MotionStage({ policy, avatar, level, playing, seed, labe
       const root = gltf.scene;
       root.traverse((node) => {
         const mesh = node as THREE.Mesh;
+        if (mesh.isMesh) mesh.castShadow = true;
         if (mesh.isMesh && mesh.morphTargetDictionary && mesh.morphTargetInfluences) morphs.push({ influences: mesh.morphTargetInfluences, index: mesh.morphTargetDictionary });
       });
       onClips?.(gltf.animations.map((a) => a.name));

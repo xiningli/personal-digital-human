@@ -26,6 +26,29 @@ export interface Pose {
 }
 
 export const POSE_BONES: (keyof Pose)[] = ["Head", "Neck", "Spine1", "Spine2", "LeftArm", "RightArm", "LeftForeArm", "RightForeArm"];
+
+/**
+ * Rest pose for the procedural body, read out of the avatar's own Idle clip (first frame,
+ * quaternion converted to XYZ Euler) instead of guessed. The hand-written approximation this
+ * replaces lowered both upper arms 1.25 rad about X and nothing else, which left them splayed
+ * away from the torso because the natural inward Y rotation was missing, bent the forearms
+ * about X where this rig bends them about Z, so they hung straight down, and never touched the
+ * wrists, so the hands kept their T-pose splay. That is exactly what the owner saw on
+ * 2026-09-19. Hands are set once here and no rule moves them afterwards.
+ */
+export const REST_POSE: Record<string, Triple> = {
+  LeftArm: [1.338, 0.15, -0.003],
+  RightArm: [1.215, -0.336, 0.049],
+  LeftForeArm: [-0.106, -0.016, 0.323],
+  RightForeArm: [-0.103, 0.016, -0.414],
+  LeftHand: [0.027, -0.577, -0.091],
+  RightHand: [0.171, 0.374, 0.131],
+};
+
+/** Put the rig into REST_POSE; used when no clip plays underneath. */
+export function applyRestPose(find: (name: string) => { rotation: { set(x: number, y: number, z: number): void } } | undefined): void {
+  for (const [name, r] of Object.entries(REST_POSE)) find(name)?.rotation.set(r[0], r[1], r[2]);
+}
 /** With a clip playing the clip owns the body; these stay procedural on top. */
 export const HEAD_BONES: (keyof Pose)[] = ["Head", "Neck"];
 
