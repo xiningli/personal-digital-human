@@ -290,6 +290,12 @@ export class AvatarStage {
       if (this.mixer) this.play(this.actions.get('idle') ?? this.actions.get('speaking'));
       for (const n of TOES) { const b = this.root.getObjectByName(n); if (b) this.toes.push(b); }
       this.root.traverse(node => { if ((node as THREE.Bone).isBone) this.bones.push(node); });
+      // Pose once before the first render, so clampRotationSpeed's baseline is the loaded
+      // character's own first animated pose rather than nothing: without this, the very first
+      // frame is unclamped by construction (there is no "last frame" to compare against yet),
+      // which is exactly where a transition into a bad clip would otherwise still get through.
+      this.mixer?.update(0);
+      for (const bone of this.bones) this.prevQuat.set(bone, bone.quaternion.clone());
       this.scene.add(this.root);
       this.state = 'ready'; this.options.onState?.('ready');
       this.start();
