@@ -1,5 +1,6 @@
 /**
- * What is left after the hand-written body language was deleted (2026-09-19).
+ * Foot grounding and the mouth: what is left after the hand-written body language was
+ * deleted (2026-09-19). Shared by the arena and by personal-site through `player/`.
  *
  * The body used to be posed by rules in `lib/pose.ts`: sine waves on the spine, a head that
  * lifted with loudness, "beat" gestures fired by a loudness threshold, and amplitude knobs
