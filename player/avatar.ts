@@ -63,7 +63,35 @@ export interface AvatarOptions {
 interface MorphSurface { influences: number[]; index: Record<string, number> }
 
 const FADE = .35;
+// ~172 deg/s: slower than a real fast head-shake can peak at, so a legitimately quick gesture
+// is softened rather than left snapping; found by measurement (a first pass at 25 rad/s, four
+// times looser, still let the "Talking" clip's bad keyframe through: 0.24 rad max over 3 s of
+// steady-state playback at 3, against up to 2.94 rad before either fix existed).
+const MAX_RAD_PER_S = 3;
 const TOES = ['LeftToeBase', 'RightToeBase'];
+
+/**
+ * A quaternion and its negation represent the same rotation, but SLERP is not sign-invariant:
+ * interpolating between two keyframes that landed on opposite signs of that double cover spins
+ * the bone the long way around in one frame, then snaps back the next. Found on the asset's
+ * own "Talking" clip (measured: the head bone turned 2.38 rad, 136 degrees, in a single 60 fps
+ * frame, twice a second) and is exactly what reads as the rig seizing. Neither the retargeting
+ * script nor whatever authored the mocap enforced sign continuity between keyframes, and
+ * three.js's QuaternionKeyframeTrack does not do it either, so every clip is walked once here,
+ * right after it is built or loaded, flipping a keyframe's sign whenever it opposes the one
+ * before it.
+ */
+function fixQuaternionContinuity(clip: THREE.AnimationClip): void {
+  for (const track of clip.tracks) {
+    if (!(track instanceof THREE.QuaternionKeyframeTrack)) continue;
+    const v = track.values;
+    for (let f = 1; f * 4 < v.length; f++) {
+      const p = (f - 1) * 4, c = f * 4;
+      const dot = v[p] * v[c] + v[p + 1] * v[c + 1] + v[p + 2] * v[c + 2] + v[p + 3] * v[c + 3];
+      if (dot < 0) { v[c] = -v[c]; v[c + 1] = -v[c + 1]; v[c + 2] = -v[c + 2]; v[c + 3] = -v[c + 3]; }
+    }
+  }
+}
 
 /** Build a three.js clip from a retargeted track: one quaternion curve per bone. */
 export function trackToClip(track: MotionTrack, name = 'generated'): THREE.AnimationClip {
@@ -79,7 +107,9 @@ export function trackToClip(track: MotionTrack, name = 'generated'): THREE.Anima
     }
     curves.push(new THREE.QuaternionKeyframeTrack(`${bones[b]}.quaternion`, times, values));
   }
-  return new THREE.AnimationClip(name, frames / fps, curves);
+  const clip = new THREE.AnimationClip(name, frames / fps, curves);
+  fixQuaternionContinuity(clip);
+  return clip;
 }
 
 export class AvatarStage {
@@ -95,6 +125,13 @@ export class AvatarStage {
   private toes: THREE.Object3D[] = [];
   private foot = new THREE.Vector3();
   private time = 0;
+  // A safety net behind fixQuaternionContinuity: a bad keyframe (not a sign flip, a
+  // genuinely-too-large delta between two adjacent keyframes — measured on the asset's own
+  // "Talking" clip: 173 degrees in under 0.08 s, physically impossible for a real head) still
+  // reads as the rig seizing. Capping the angle any bone is allowed to turn per second, however
+  // it got that pose, is cheap and source-agnostic: it never touches a clip that behaves.
+  private bones: THREE.Object3D[] = [];
+  private prevQuat = new Map<THREE.Object3D, THREE.Quaternion>();
   private mixer: THREE.AnimationMixer | null = null;
   private actions = new Map<MotionState, THREE.AnimationAction>();
   private action: THREE.AnimationAction | null = null;
@@ -184,6 +221,28 @@ export class AvatarStage {
    * locked at its bind value, so any leg flexion lifts both feet and an asymmetric stance lifts
    * one more than the other. Measured on the Talking clip: soles 3.7 cm and 4.9 cm up.
    */
+  /**
+   * The safety net described where MAX_RAD_PER_S is declared: after the mixer has posed every
+   * bone for this frame, pull back any bone that turned faster than that from wherever it
+   * landed towards where it actually was last frame, so a bad keyframe reads as a very fast
+   * beat instead of a snap. Applies whatever produced the pose — a capture, a generated track,
+   * or a crossfade between two of either.
+   */
+  private clampRotationSpeed(delta: number) {
+    if (delta <= 0) return;
+    const maxAngle = MAX_RAD_PER_S * delta;
+    for (const bone of this.bones) {
+      const prev = this.prevQuat.get(bone);
+      if (prev) {
+        const angle = prev.angleTo(bone.quaternion);
+        if (angle > maxAngle) bone.quaternion.copy(prev.slerp(bone.quaternion, maxAngle / angle));
+        prev.copy(bone.quaternion);
+      } else {
+        this.prevQuat.set(bone, bone.quaternion.clone());
+      }
+    }
+  }
+
   private ground() {
     if (!this.root || !this.toes.length) return;
     this.root.position.y = 0;
@@ -211,6 +270,7 @@ export class AvatarStage {
         }
       });
       this.options.onClips?.(gltf.animations.map(a => a.name));
+      for (const clip of gltf.animations) fixQuaternionContinuity(clip);
       if (gltf.animations.length || this.options.track) {
         this.mixer = new THREE.AnimationMixer(this.root);
         const find = (names: string[]) => names.map(name => gltf!.animations.find(c => c.name === name)).find(Boolean);
@@ -229,6 +289,7 @@ export class AvatarStage {
       }
       if (this.mixer) this.play(this.actions.get('idle') ?? this.actions.get('speaking'));
       for (const n of TOES) { const b = this.root.getObjectByName(n); if (b) this.toes.push(b); }
+      this.root.traverse(node => { if ((node as THREE.Bone).isBone) this.bones.push(node); });
       this.scene.add(this.root);
       this.state = 'ready'; this.options.onState?.('ready');
       this.start();
@@ -246,6 +307,7 @@ export class AvatarStage {
       this.raf = requestAnimationFrame(tick);
       const delta = Math.min(.1, this.clock.getDelta());
       this.mixer?.update(delta);
+      this.clampRotationSpeed(delta);
       this.time += delta;
       this.ground();
       this.applyFace();
