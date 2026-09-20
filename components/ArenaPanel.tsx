@@ -62,6 +62,7 @@ export default function ArenaPanel() {
   const [history, setHistory] = useState<{ rounds: ArenaRound[]; votes: ArenaVote[] }>({ rounds: [], votes: [] });
   const [refresh, setRefresh] = useState(0);
   const [clips, setClips] = useState<string[] | null>(null);
+  const [copied, setCopied] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioEl, setAudioEl] = useState<HTMLAudioElement | null>(null);
   const level = useLoudness(audioEl);
@@ -72,13 +73,36 @@ export default function ArenaPanel() {
       .then(([rounds, votes]) => setHistory({ rounds, votes })).catch(() => {});
   }, [refresh]);
 
+  /**
+   * Show a round and put its id in the address bar, so a round can be linked to, reloaded and
+   * quoted when something about it looks wrong. replaceState rather than a route change: the
+   * canvases must not be torn down and rebuilt just because the URL gained an id.
+   */
+  const show = useCallback((r: ArenaRound | null) => {
+    setRound(r); setWinner(undefined); setRatings({}); setNotes(""); setCandidateNotes({}); setPlaying(false);
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (r) url.searchParams.set("round", r.id); else url.searchParams.delete("round");
+    window.history.replaceState(null, "", url.toString());
+  }, []);
+
+  // A link opened with ?round=<id> restores that round instead of an empty page.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("round");
+    if (!id) return;
+    fetch(`/api/arena/rounds/${encodeURIComponent(id)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("that round is not in this arena"))))
+      .then((r: ArenaRound) => { setRound(r); setPlaying(false); })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, []);
+
   const draw = async () => {
     setBusy(true); setError(null);
     try {
       const r = await fetch("/api/arena/random", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category }) });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
-      setRound(data); setWinner(undefined); setRatings({}); setNotes(""); setCandidateNotes({}); setPlaying(false);
+      show(data);
       setRefresh((n) => n + 1);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
@@ -120,6 +144,14 @@ export default function ArenaPanel() {
             <span className="uppercase tracking-wide text-xs">{round.trial === "repeat" ? "repeat trial" : "test trial"}</span>
             <span>{LINE_BANK.find((c) => c.id === round.category)?.label ?? round.category}</span>
             <span>· voice {round.emotion}</span>
+            <span className="font-mono text-xs text-gray-400">· {round.id.slice(0, 8)}</span>
+            <button
+              onClick={() => { navigator.clipboard?.writeText(window.location.href).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1500); }).catch(() => {}); }}
+              title={typeof window === "undefined" ? "" : window.location.href}
+              className="text-xs underline decoration-dotted hover:text-gray-700"
+            >
+              {copied ? "link copied" : "copy link"}
+            </button>
           </div>
           <p className="text-lg leading-relaxed">“{round.text}”</p>
           <audio ref={audioRef} key={round.id} src={round.audioPath} controls className="w-full"
@@ -167,8 +199,9 @@ export default function ArenaPanel() {
             <li key={r.id} className="py-2 flex items-center gap-3">
               <span className={`w-2 h-2 rounded-full ${voted.has(r.id) ? "bg-emerald-500" : "bg-gray-300"}`} />
               <span className="text-gray-400 text-xs">{r.trial}</span>
+              <span className="font-mono text-gray-400 text-xs">{r.id.slice(0, 8)}</span>
               <span className="truncate flex-1">{r.text}</span>
-              <button className="text-xs text-gray-500 hover:underline" onClick={() => { setRound(r); setWinner(undefined); setRatings({}); setNotes(""); setCandidateNotes({}); setPlaying(false); }}>open</button>
+              <button className="text-xs text-gray-500 hover:underline" onClick={() => show(r)}>open</button>
             </li>
           ))}
           {!recent.length && <li className="py-2 text-gray-400">No rounds yet. Press 🎲 New round.</li>}
