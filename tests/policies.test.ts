@@ -6,7 +6,7 @@ test("the design space holds the site's default and distinct ids", () => {
   const space = designSpace();
   assert.ok(space.some((p) => p.id === SITE_DEFAULT.id));
   assert.equal(new Set(space.map((p) => p.id)).size, space.length);
-  assert.ok(space.some((p) => p.source === "procedural"));
+  assert.ok(space.every((p) => p.source === "clip" || p.source === "generated"));
 });
 
 test("a sampled pair is two different policies and favours the unserved", () => {

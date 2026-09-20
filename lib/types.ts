@@ -7,27 +7,19 @@
 export type Mood = "idle" | "listening" | "hearing" | "thinking" | "speaking" | "greeting";
 
 /**
- * A motion policy: how the body moves for a spoken line. `clip` is the Mixamo clip that
- * plays underneath (or none: the procedural body alone); the numbers scale the procedural
- * head/torso/arm rules on top. `source` records where the policy came from so learned
- * policies (a co-speech model's output) can be ranked against these in the same table.
+ * Where a candidate's motion comes from. The amplitude knobs this replaces (headLift, beats,
+ * sway, ease) were the hand-written body language, deleted on 2026-09-19: the arena was
+ * ranking variants of a guess. A candidate is now a motion source, and the interesting
+ * comparison is between motion-capture clips and the output of a generative model.
  */
 export interface MotionPolicy {
   /** Stable id; the ranking key. */
   id: string;
   name: string;
-  source: "clip" | "procedural" | "model";
-  /** Mixamo clip name for the body, or null for the procedural body. */
+  source: "clip" | "generated";
+  /** Motion-capture clip baked into the avatar, for source "clip". */
   clip: string | null;
-  /** Speech loudness -> head lift, 0..2 (1 = the site's default). */
-  headLift: number;
-  /** Beat gestures per loudness rise, 0..2 (0 = never). */
-  beats: number;
-  /** Slow head turn and torso sway, 0..2. */
-  sway: number;
-  /** Time constant scale for easing, 0.5..2 (higher = slower, calmer). */
-  ease: number;
-  /** For source "model": the id of the model or checkpoint that produced the frames. */
+  /** The model and checkpoint that produced the track, for source "generated". */
   model?: string;
 }
 

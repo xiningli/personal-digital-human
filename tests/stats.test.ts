@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { bradleyTerry, fitBradleyTerry, raterReliability } from "../lib/stats.ts";
 import type { ArenaRound, ArenaVote, MotionPolicy } from "../lib/types.ts";
 
-const P = (id: string): MotionPolicy => ({ id, name: id, source: "clip", clip: "Talking", headLift: 1, beats: 1, sway: 1, ease: 1 });
+const P = (id: string): MotionPolicy => ({ id, name: id, source: "clip", clip: "Talking" });
 const round = (id: string, a: string, b: string, trial: ArenaRound["trial"] = "test", repeatOf?: string): ArenaRound => ({
   id, createdAt: "2026-09-17T00:00:00Z", trial, repeatOf, category: "answer", text: "x", audioPath: "/a.wav", emotion: "neutral", voiceModel: "v2", avatar: "/m.glb", seed: 1,
   candidates: [{ id: `${id}-a`, label: "A", policyId: a, policy: P(a) }, { id: `${id}-b`, label: "B", policyId: b, policy: P(b) }],
