@@ -19,3 +19,11 @@ __pycache__/
 # generated motion and model outputs
 /outputs/
 /models/
+
+# generated-motion workspace: venv, upstream checkouts, model weights and outputs
+/motion/.venv/
+/motion/pantomatrix/
+/motion/emage_evaltools/
+/motion/reference/
+/motion/out/
+/motion/*.log
