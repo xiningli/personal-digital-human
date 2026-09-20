@@ -9,7 +9,10 @@ import path from "path";
 import { AUDIO_DIR } from "./storage";
 
 export const STUDIO_URL = (process.env.STUDIO_TTS_URL ?? "http://127.0.0.1:8010").replace(/\/$/, "");
-export const STUDIO_ROOT = process.env.STUDIO_ROOT ?? path.join(process.env.HOME ?? "", "personal-voice-clone-studio");
+// The studio is a sibling checkout (both live under one digital-human directory), so the
+// default follows this repo wherever it is moved. Only the fallback path in neutralProfile()
+// reads it; a service that answers GET /v1/profiles makes it unnecessary.
+export const STUDIO_ROOT = process.env.STUDIO_ROOT ?? path.join(process.cwd(), "..", "personal-voice-clone-studio");
 
 /** The digital human's delivery table (personal-site backend/tts.py, ADR-027). */
 export const EMOTION_INSTRUCT: Record<string, string> = {

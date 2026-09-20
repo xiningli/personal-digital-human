@@ -9,13 +9,13 @@ export as training data for a gesture policy.
 ## Run
 
 ```bash
-bash scripts/import-avatar.sh     # copies the avatar with the Mixamo clips from ~/personal-site (never committed)
+bash scripts/import-avatar.sh     # copies the avatar with the Mixamo clips from ~/digital-human/personal-site (never committed)
 npm install
 npm run dev                       # http://<host>:3020/arena
 ```
 
 Speech comes from a voice service: the studio's backend on this machine
-(`bash backend/run.sh` in `~/personal-voice-clone-studio`), or a bundle the studio's
+(`bash backend/run.sh` in `~/digital-human/personal-voice-clone-studio`), or a bundle the studio's
 **Export** tab pushed to another host — set `STUDIO_TTS_URL` in `.env.local` (this
 checkout uses `http://p520:8010`, a resident service on the owner's second machine, so this
 card's memory stays free). The arena asks the service for its reference clips

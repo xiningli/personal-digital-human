@@ -2,8 +2,8 @@
 
 Next.js 16 app on port 3020: a motion arena that ranks body-language policies for the
 owner's digital human by pairwise preference (docs/protocol.md). Sibling of
-`~/personal-voice-clone-studio` (same methodology, same toolchain) and consumer of
-`~/personal-site` (the avatar asset and the rules in `lib/pose.ts`, which mirror the site's
+`~/digital-human/personal-voice-clone-studio` (same methodology, same toolchain) and consumer of
+`~/digital-human/personal-site` (the avatar asset and the rules in `lib/pose.ts`, which mirror the site's
 `src/pose.ts`).
 
 ## Running

@@ -1,7 +1,7 @@
 # Third-party assets
 
 - **Avatar** (`public/assets/model-clips.glb`, ignored): the owner's MetaPerson (AvatarSDK)
-  export with nine Mixamo (Adobe) animation clips retargeted onto it in `~/personal-site`.
+  export with nine Mixamo (Adobe) animation clips retargeted onto it in `~/digital-human/personal-site`.
   Copied here by `scripts/import-avatar.sh`, never committed: the owner's reading of
   Mixamo's terms is that animations may be used inside a personal or commercial project but
   not redistributed as standalone assets, and a public repository would be the latter. Not
