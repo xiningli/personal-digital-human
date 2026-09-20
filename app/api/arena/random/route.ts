@@ -1,7 +1,9 @@
 import { NextRequest } from "next/server";
+import fs from "fs/promises";
+import path from "path";
 import { v4 as uuid } from "uuid";
 import { getArenaRounds, getArenaVotes, saveArenaRound } from "@/lib/storage";
-import { LINE_BANK, designSpace, pickLine, samplePair } from "@/lib/policies";
+import { LINE_BANK, designSpace, pickLine, samplePair, trackPath } from "@/lib/policies";
 import { EMOTION_FOR_CATEGORY, speak } from "@/lib/tts";
 import type { ArenaCandidate, ArenaRound, TrialType } from "@/lib/types";
 
@@ -53,9 +55,20 @@ export async function POST(request: NextRequest) {
     const emotion = EMOTION_FOR_CATEGORY[line.category] ?? "neutral";
     let spoken;
     try { spoken = await speak(line.text, emotion); } catch (e) { return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 503 }); }
+    // Generated motion exists only for audio it was generated from, so a candidate whose
+    // track is missing is withheld rather than shown as a failure.
+    const hasTrack = async (p: { source: string; model?: string }) => {
+      if (p.source !== "generated") return true;
+      try {
+        await fs.access(path.join(process.cwd(), "public", trackPath(spoken.audioPath, p.model ?? "").replace(/^\//, "")));
+        return true;
+      } catch { return false; }
+    };
     const served = new Map<string, number>();
     for (const r of rounds) if (r.trial === "test") for (const c of r.candidates) served.set(c.policyId, (served.get(c.policyId) ?? 0) + 1);
-    const pair = samplePair(served);
+    const usable = new Set<string>();
+    for (const p of designSpace()) if (await hasTrack(p)) usable.add(p.id);
+    const pair = samplePair(served, undefined, (p) => usable.has(p.id));
     const ordered = shuffled ? [pair[1], pair[0]] : pair;
     const candidates: ArenaCandidate[] = ordered.map((p, i) => ({ id: uuid(), label: labels[i], policyId: p.id, policy: p }));
     round = {

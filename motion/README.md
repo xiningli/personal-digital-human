@@ -51,11 +51,34 @@ One metric was disqualified by that exercise. **Beat consistency scores time-shu
 and pure jitter HIGHER than the real clip**, because it rewards sharp velocity changes near
 audio onsets and noise has those everywhere. It is not a quality measure.
 
+## Retargeting onto the avatar
+
+```bash
+.venv/bin/python retarget.py <motion.npz> ../public/assets/model-clips.glb
+.venv/bin/python verify_retarget.py <motion.npz> <track.json> --check   # exit 1 above 1°
+.venv/bin/python build_tracks.py            # every arena clip that lacks a track
+```
+
+What transfers between two skeletons is each joint's *global* orientation, re-expressed in
+the target's rest frame. SMPL-X makes that cheap: its zero pose has every joint frame at
+identity, so a joint's composed global rotation is exactly the delta it has moved through.
+
+The neutral it is applied to is not the bind pose, and getting that wrong is invisible until
+measured. `verify_retarget.py` runs forward kinematics on both skeletons and compares limb
+directions, which separates the two failure modes: a **constant** error per limb is a
+rest-pose mismatch, a **varying** one is mangled motion. Two bugs were found that way.
+
+| version | worst limb error | cause |
+|---|---|---|
+| aligned to the rig's bind pose | 15.9° constant | SMPL-X rests in an A shape, the rig binds in a T |
+| head aligned to SMPL-X's first child | large, head thrown back | that child is the jaw, pointing forward, while HeadTop_End points up |
+| aligning only shared segments | **0.03°** | quaternion rounding in the JSON, nothing else |
+
+Foot grounding still applies afterwards: generated motion is kinematic and knows nothing
+about the floor. The player does it for every motion source.
+
 ## Next
 
-Retarget SMPL-X (55 joints) onto the avatar's Mixamo skeleton, then register the track as an
-arena candidate so it can be ranked against the motion capture. Joint correspondence is
-direct for the body — pelvis→Hips, spine1..3→Spine..Spine2, collar/shoulder/elbow/wrist→
-Shoulder/Arm/ForeArm/Hand, hips/knees/ankles→UpLeg/Leg/Foot — and the fingers map one to one.
-Foot grounding still applies afterwards: generated motion is kinematic and knows nothing
-about the floor.
+A diffusion model as a second candidate, ranked against EMAGE and the captures in the arena.
+DiffSHEG is the obvious one and needs porting to modern torch first: it pins torch 1.13.1 /
+CUDA 11.7, which has no kernels for Blackwell.

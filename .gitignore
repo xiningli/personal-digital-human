@@ -27,3 +27,6 @@ __pycache__/
 /motion/reference/
 /motion/out/
 /motion/*.log
+
+# generated motion tracks (built by motion/build_tracks.py from the owner-voiced clips)
+/public/motion/

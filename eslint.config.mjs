@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The generated-motion workspace: a Python venv and upstream checkouts, not our source.
+    "motion/**",
   ]),
 ]);
 

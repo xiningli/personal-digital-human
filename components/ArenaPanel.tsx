@@ -159,7 +159,7 @@ export default function ArenaPanel() {
           <div className="grid grid-cols-2 gap-4">
             {round.candidates.map((c) => (
               <div key={c.id} className="space-y-3">
-                <MotionStage policy={c.policy} avatar={round.avatar} level={level} playing={playing} seed={round.seed} label={c.label} onClips={setClips} />
+                <MotionStage policy={c.policy} avatar={round.avatar} audioPath={round.audioPath} level={level} playing={playing} seed={round.seed} label={c.label} onClips={setClips} />
                 <button onClick={() => setWinner(c.id)}
                   className={`w-full px-3 py-2 rounded-lg border ${winner === c.id ? "bg-gray-900 text-white border-gray-900" : "bg-white hover:bg-gray-50"}`}>
                   {c.label} moves better

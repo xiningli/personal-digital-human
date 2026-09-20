@@ -34,6 +34,17 @@ export const CLIP_FOR: Record<MotionState, string[]> = {
   greeting: ['Waving'],
 };
 
+/**
+ * Motion produced by a model and retargeted onto this rig: local rotations per bone per
+ * frame, xyzw, flattened frame-major. `motion/retarget.py` writes it.
+ */
+export interface MotionTrack {
+  fps: number;
+  frames: number;
+  bones: string[];
+  quats: number[];
+}
+
 export interface AvatarOptions {
   canvas: HTMLCanvasElement;
   /** Borrow a renderer, or leave it out and the stage makes one for this canvas. */
@@ -45,12 +56,31 @@ export interface AvatarOptions {
   ground?: boolean;
   /** Pin a state to particular clips, so the arena can play one named capture per candidate. */
   clipFor?: Partial<Record<MotionState, string[]>>;
+  /** Generated motion to speak with, instead of a capture. */
+  track?: MotionTrack;
 }
 
 interface MorphSurface { influences: number[]; index: Record<string, number> }
 
 const FADE = .35;
 const TOES = ['LeftToeBase', 'RightToeBase'];
+
+/** Build a three.js clip from a retargeted track: one quaternion curve per bone. */
+export function trackToClip(track: MotionTrack, name = 'generated'): THREE.AnimationClip {
+  const { fps, frames, bones, quats } = track;
+  const times = new Float32Array(frames);
+  for (let f = 0; f < frames; f++) times[f] = f / fps;
+  const curves: THREE.KeyframeTrack[] = [];
+  for (let b = 0; b < bones.length; b++) {
+    const values = new Float32Array(frames * 4);
+    for (let f = 0; f < frames; f++) {
+      const src = (f * bones.length + b) * 4;
+      values.set([quats[src], quats[src + 1], quats[src + 2], quats[src + 3]], f * 4);
+    }
+    curves.push(new THREE.QuaternionKeyframeTrack(`${bones[b]}.quaternion`, times, values));
+  }
+  return new THREE.AnimationClip(name, frames / fps, curves);
+}
 
 export class AvatarStage {
   scene = new THREE.Scene();
@@ -181,7 +211,7 @@ export class AvatarStage {
         }
       });
       this.options.onClips?.(gltf.animations.map(a => a.name));
-      if (gltf.animations.length) {
+      if (gltf.animations.length || this.options.track) {
         this.mixer = new THREE.AnimationMixer(this.root);
         const find = (names: string[]) => names.map(name => gltf!.animations.find(c => c.name === name)).find(Boolean);
         const map = { ...CLIP_FOR, ...this.options.clipFor };
@@ -190,8 +220,14 @@ export class AvatarStage {
           if (clip) this.actions.set(state, this.mixer.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity));
         }
         this.clips = gltf.animations.length;
-        this.play(this.actions.get('idle'));
       }
+      if (this.options.track) {
+        // Generated motion becomes an ordinary AnimationClip, so it crossfades, loops and
+        // shares the mixer with the captures instead of needing a second playback path.
+        const clip = trackToClip(this.options.track);
+        this.actions.set('speaking', this.mixer!.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity));
+      }
+      if (this.mixer) this.play(this.actions.get('idle') ?? this.actions.get('speaking'));
       for (const n of TOES) { const b = this.root.getObjectByName(n); if (b) this.toes.push(b); }
       this.scene.add(this.root);
       this.state = 'ready'; this.options.onState?.('ready');
