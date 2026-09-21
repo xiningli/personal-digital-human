@@ -9,7 +9,7 @@ owner's digital human by pairwise preference (docs/protocol.md). Sibling of
 ## Running
 
 ```bash
-bash scripts/import-avatar.sh   # public/assets/model-clips.glb from the site; ignored by git
+bash scripts/import-avatar.sh   # public/assets/model-clips.glb from the site; ignored by git; also repairs the tracks (clean- + fix-avatar-motion.mjs)
 npm run dev                     # http://0.0.0.0:3020 (no HTTPS needed: no microphone here)
 ```
 

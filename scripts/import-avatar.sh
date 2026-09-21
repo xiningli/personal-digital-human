@@ -20,3 +20,9 @@ fi
 # keyframes (see clean-avatar-animations.mjs for what was found and why this belongs here,
 # once, rather than patched around at playback time): clean every import automatically.
 node scripts/clean-avatar-animations.mjs public/assets/model-clips.glb
+
+# Playability fixes, also once in the asset (see fix-avatar-motion.mjs): drop the retargeter's
+# leading-transient frames, close the loop seam so repeats don't snap, and bake a hips
+# translation track that keeps the planted foot from skating. Idempotent, so re-importing an
+# already-fixed source is a no-op.
+node scripts/fix-avatar-motion.mjs public/assets/model-clips.glb

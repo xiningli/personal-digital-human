@@ -29,8 +29,11 @@ export type MotionState = 'idle' | 'speaking' | 'affirmative' | 'negative' | 'gr
 
 export const CLIP_FOR: Record<MotionState, string[]> = {
   idle: ['Breathing Idle', 'Idle'],
-  // "Telling A Secret" is a conspiratorial hunch with the weight on one foot; it read as a
-  // floating body and is wrong for answering a visitor, so it is not offered here.
+  // Speaking uses every listed clip the asset has, played one after another instead of
+  // looping one capture: a single clip on LoopRepeat visibly restarts every few seconds, and
+  // even with a seamless loop the repetition reads as mechanical. "Telling A Secret" is a
+  // conspiratorial hunch with the weight on one foot; it read as a floating body and is wrong
+  // for answering a visitor, so it is not offered here.
   speaking: ['Talking', 'Lengthy Head Nod'],
   affirmative: ['Head Nod Yes', 'Thoughtful Head Nod', 'Lengthy Head Nod'],
   negative: ['Shrugging'],
@@ -68,6 +71,9 @@ interface MorphSurface { influences: number[]; index: Record<string, number> }
 const FADE = .35;
 const TOES = ['LeftToeBase', 'RightToeBase'];
 
+/** States that play their clip once and then settle back to idle, instead of looping it. */
+const ONE_SHOT: ReadonlySet<MotionState> = new Set(['affirmative', 'negative', 'greeting']);
+
 /** Build a three.js clip from a retargeted track: one quaternion curve per bone. */
 export function trackToClip(track: MotionTrack, name = 'generated'): THREE.AnimationClip {
   const { fps, frames, bones, quats } = track;
@@ -101,6 +107,11 @@ export class AvatarStage {
   private mixer: THREE.AnimationMixer | null = null;
   private actions = new Map<MotionState, THREE.AnimationAction>();
   private action: THREE.AnimationAction | null = null;
+  /** The action built from `options.track` or the last `setTrack` call, for uncaching on swap. */
+  private generated: THREE.AnimationAction | null = null;
+  /** Every speaking clip the asset has, played in turn (empty when speaking is pinned or generated). */
+  private speaking: THREE.AnimationAction[] = [];
+  private speakIndex = 0;
   private morphs: MorphSurface[] = [];
   private clock = new THREE.Clock();
   private raf = 0;
@@ -117,8 +128,8 @@ export class AvatarStage {
     const warm = new THREE.DirectionalLight(0xd7c2a0, 1.1); warm.position.set(3, 1, 2); this.scene.add(warm);
     const rim = new THREE.DirectionalLight(0x9fd8e8, 1.4); rim.position.set(0, 2.5, -4); this.scene.add(rim);
     if (options.ground) this.addGroundShadow();
-    this.camera.position.set(0, 1.34, 4.35);
-    this.camera.lookAt(0, 1.02, 0);
+    this.camera.position.set(0, 1.5, 3.46);
+    this.camera.lookAt(0, 0.89, 0);
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(options.canvas);
   }
@@ -158,8 +169,39 @@ export class AvatarStage {
   }
 
   setMotion(next: MotionState) {
+    // Same-state calls arrive per audio chunk while a line is still playing; restarting the
+    // gesture on each one would stutter, so only an actual state change touches playback.
+    if (next === this.motion) return;
     this.motion = next;
-    this.play(this.actions.get(next));
+    this.play(next === 'speaking' && this.speaking.length ? this.speaking[this.speakIndex] : this.actions.get(next));
+  }
+
+  /**
+   * Swap the generated speaking track — e.g. the profiles page cuts the full profile track to
+   * one sentence's frame range, then puts the full track back. The swap is a hard cut rather
+   * than a crossfade: the point is to jump to the sentence's first frame.
+   */
+  setTrack(track: MotionTrack | null) {
+    const prev = this.generated;
+    if (prev) {
+      prev.stop();
+      this.mixer?.uncacheClip(prev.getClip());
+      this.actions.delete('speaking');
+      this.generated = null;
+      if (this.action === prev) this.action = null;
+    }
+    if (track && this.mixer) {
+      const action = this.mixer.clipAction(trackToClip(track)).setLoop(THREE.LoopRepeat, Infinity);
+      this.actions.set('speaking', action);
+      this.generated = action;
+      if (this.motion === 'speaking') this.play(action);
+    }
+  }
+
+  /** Freeze or resume the animation clock, so a preview can pause in step with its audio. */
+  setPaused(paused: boolean) {
+    if (paused) this.stop();
+    else if (this.state === 'ready' && !this.lost && !this.options.reduced?.()) this.start();
   }
 
   private play(action: THREE.AnimationAction | undefined) {
@@ -168,6 +210,21 @@ export class AvatarStage {
     if (this.action) this.action.crossFadeTo(action, FADE, false);
     this.action = action;
     if (this.options.reduced?.()) this.still();
+  }
+
+  /**
+   * A one-shot clip ended. Speaking moves on to the next speaking clip (cycling, so an answer
+   * of any length keeps moving without repeating one capture); anything else settles to idle.
+   */
+  private onClipFinished(action: THREE.AnimationAction) {
+    if (action !== this.action) return;
+    if (this.motion === 'speaking' && this.speaking.length > 1) {
+      this.speakIndex = (this.speakIndex + 1) % this.speaking.length;
+      this.play(this.speaking[this.speakIndex]);
+    } else if (this.motion && this.motion !== 'idle') {
+      this.motion = 'idle';
+      this.play(this.actions.get('idle'));
+    }
   }
 
   setFace(targets: Record<string, number>) {
@@ -219,18 +276,39 @@ export class AvatarStage {
         const find = (names: string[]) => names.map(name => gltf!.animations.find(c => c.name === name)).find(Boolean);
         const map = { ...CLIP_FOR, ...this.options.clipFor };
         for (const [state, names] of Object.entries(map) as [MotionState, string[]][]) {
+          // Speaking plays each listed clip once, in turn, so a long answer doesn't restate the
+          // same capture on a loop. A pinned or generated speaking clip (the arena) keeps
+          // looping instead: a round is judged against its own audio, which can be any length.
+          if (state === 'speaking' && !this.options.clipFor?.speaking && !this.options.track) {
+            const clips = names.map(name => gltf!.animations.find(c => c.name === name)).filter(Boolean) as THREE.AnimationClip[];
+            if (clips.length > 1) {
+              this.speaking = clips.map(clip => {
+                const a = this.mixer!.clipAction(clip).setLoop(THREE.LoopOnce, 1);
+                a.clampWhenFinished = true;
+                return a;
+              });
+              continue;
+            }
+          }
           const clip = find(names);
-          if (clip) this.actions.set(state, this.mixer.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity));
+          if (!clip) continue;
+          const action = this.mixer.clipAction(clip);
+          if (ONE_SHOT.has(state)) { action.setLoop(THREE.LoopOnce, 1); action.clampWhenFinished = true; }
+          else action.setLoop(THREE.LoopRepeat, Infinity);
+          this.actions.set(state, action);
         }
+        this.mixer.addEventListener('finished', (e) => this.onClipFinished(e.action));
         this.clips = gltf.animations.length;
       }
       if (this.options.track) {
         // Generated motion becomes an ordinary AnimationClip, so it crossfades, loops and
         // shares the mixer with the captures instead of needing a second playback path.
         const clip = trackToClip(this.options.track);
-        this.actions.set('speaking', this.mixer!.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity));
+        const action = this.mixer!.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity);
+        this.actions.set('speaking', action);
+        this.generated = action;
       }
-      if (this.mixer) this.play(this.actions.get('idle') ?? this.actions.get('speaking'));
+      if (this.mixer) this.play(this.actions.get('idle') ?? this.speaking[this.speakIndex] ?? this.actions.get('speaking'));
       for (const n of TOES) { const b = this.root.getObjectByName(n); if (b) this.toes.push(b); }
       this.scene.add(this.root);
       this.state = 'ready'; this.options.onState?.('ready');
