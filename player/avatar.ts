@@ -204,6 +204,32 @@ export class AvatarStage {
     else if (this.state === 'ready' && !this.lost && !this.options.reduced?.()) this.start();
   }
 
+  /**
+   * The generated speaking track's clock, in seconds — for a consumer that drives sync
+   * itself. The eval page (/profiles/[id]) locks the avatar to a video's currentTime: the
+   * video is the master clock and this is the follower. Null when there is no track.
+   */
+  get trackTime(): number | null {
+    return this.generated ? this.generated.time : null;
+  }
+
+  /**
+   * Jump the generated track to `seconds` (wrapped into its loop) and repaint, even while
+   * paused — a scrub while stopped must still show the frame it lands on.
+   */
+  seekTrack(seconds: number) {
+    const action = this.generated;
+    if (!action) return;
+    const duration = action.getClip().duration;
+    action.time = ((seconds % duration) + duration) % duration;
+    if (!this.raf) this.still();
+  }
+
+  /** Slow the track's clock for frame-by-frame inspection (the eval page's 0.5x mode). */
+  setTrackRate(rate: number) {
+    if (this.generated) this.generated.timeScale = rate;
+  }
+
   private play(action: THREE.AnimationAction | undefined) {
     if (!action || action === this.action) return;
     action.reset(); action.play();

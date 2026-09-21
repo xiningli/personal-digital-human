@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ProfilePreview, { type PreviewPlayback } from "./ProfilePreview";
 import type { MotionProfile, MotionSegment } from "@/lib/types";
@@ -181,7 +182,10 @@ export default function ProfilePanel() {
               </>
             )}
 
-            <div className="flex justify-end">
+            <div className="flex justify-between items-center">
+              {p.status === "ready" && p.trackPath ? (
+                <Link href={`/profiles/${p.id}`} className="text-xs text-gray-900 font-medium hover:underline">评测 →</Link>
+              ) : <span />}
               <button onClick={() => remove(p)} className="text-xs text-red-600 hover:underline">Delete</button>
             </div>
           </div>

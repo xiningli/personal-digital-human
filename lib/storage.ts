@@ -1,11 +1,12 @@
 import fs from "fs/promises";
 import path from "path";
-import type { ArenaRound, ArenaVote, MotionProfile } from "./types";
+import type { ArenaRound, ArenaVote, MotionProfile, ProfileEval } from "./types";
 
 const ROOT = process.cwd();
 export const DATA_DIR = path.join(ROOT, "data");
 const ROUNDS_FILE = path.join(DATA_DIR, "arena-rounds.json");
 const VOTES_FILE = path.join(DATA_DIR, "arena-votes.jsonl");
+const EVALS_FILE = path.join(DATA_DIR, "profile-evals.jsonl");
 export const AUDIO_DIR = path.join(ROOT, "public", "audio", "arena");
 export const PROFILES_DIR = path.join(DATA_DIR, "profiles");
 export const PUBLIC_MOTION_DIR = path.join(ROOT, "public", "motion");
@@ -54,6 +55,22 @@ export async function getArenaVotes(): Promise<ArenaVote[]> {
 export async function appendArenaVote(vote: ArenaVote): Promise<void> {
   await ensureDirs();
   await fs.appendFile(VOTES_FILE, JSON.stringify(vote) + "\n", "utf-8");
+}
+
+// Profile evals (lib/types.ts): human faithfulness scores from the side-by-side eval page,
+// one JSON line per submission.
+
+export async function getProfileEvals(): Promise<ProfileEval[]> {
+  await ensureDirs();
+  try {
+    const text = await fs.readFile(EVALS_FILE, "utf-8");
+    return text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as ProfileEval);
+  } catch { return []; }
+}
+
+export async function appendProfileEval(ev: ProfileEval): Promise<void> {
+  await ensureDirs();
+  await fs.appendFile(EVALS_FILE, JSON.stringify(ev) + "\n", "utf-8");
 }
 
 // Motion profiles (lib/types.ts): one directory per profile with the source clip, the

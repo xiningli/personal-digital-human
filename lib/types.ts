@@ -71,6 +71,24 @@ export interface MotionTrack {
   frames: number[][][];
 }
 
+/**
+ * One human judgement from the profile eval page (/profiles/[id]): the owner watches the
+ * source clip and the extracted track side by side and scores how faithful the imitation is.
+ * Appended to data/profile-evals.jsonl, one line per submission.
+ */
+export interface ProfileEval {
+  profileId: string;
+  /** ISO timestamp of the submission. */
+  ts: string;
+  /** Does the avatar move like the person in the clip? 1-5. */
+  likeness: number;
+  /** Are the gestures on the same beats as the original? 1-5. */
+  timing: number;
+  /** Does the motion look natural on its own? 1-5. */
+  naturalness: number;
+  note?: string;
+}
+
 export interface ArenaCandidate {
   id: string;
   /** A/B label under which the rater saw it in this round. */
