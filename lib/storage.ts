@@ -1,12 +1,14 @@
 import fs from "fs/promises";
 import path from "path";
-import type { ArenaRound, ArenaVote } from "./types";
+import type { ArenaRound, ArenaVote, MotionProfile } from "./types";
 
 const ROOT = process.cwd();
 export const DATA_DIR = path.join(ROOT, "data");
 const ROUNDS_FILE = path.join(DATA_DIR, "arena-rounds.json");
 const VOTES_FILE = path.join(DATA_DIR, "arena-votes.jsonl");
 export const AUDIO_DIR = path.join(ROOT, "public", "audio", "arena");
+export const PROFILES_DIR = path.join(DATA_DIR, "profiles");
+export const PUBLIC_MOTION_DIR = path.join(ROOT, "public", "motion");
 
 async function ensureDirs() {
   await fs.mkdir(DATA_DIR, { recursive: true });
@@ -52,4 +54,41 @@ export async function getArenaVotes(): Promise<ArenaVote[]> {
 export async function appendArenaVote(vote: ArenaVote): Promise<void> {
   await ensureDirs();
   await fs.appendFile(VOTES_FILE, JSON.stringify(vote) + "\n", "utf-8");
+}
+
+// Motion profiles (lib/types.ts): one directory per profile with the source clip, the
+// extracted npz, the audio and the meta record; the served track lives under public/motion/.
+
+export function profileDir(id: string): string {
+  return path.join(PROFILES_DIR, id);
+}
+
+export async function getProfiles(): Promise<MotionProfile[]> {
+  let ids: string[] = [];
+  try { ids = await fs.readdir(PROFILES_DIR); } catch { return []; }
+  const profiles: MotionProfile[] = [];
+  for (const id of ids) {
+    const meta = await readJson<MotionProfile | null>(path.join(PROFILES_DIR, id, "meta.json"), null);
+    if (meta) profiles.push(meta);
+  }
+  return profiles.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function getProfile(id: string): Promise<MotionProfile | null> {
+  return readJson<MotionProfile | null>(path.join(PROFILES_DIR, id, "meta.json"), null);
+}
+
+export async function saveProfile(profile: MotionProfile): Promise<void> {
+  const dir = profileDir(profile.id);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(profile, null, 2), "utf-8");
+}
+
+export async function deleteProfile(id: string): Promise<boolean> {
+  const profile = await getProfile(id);
+  if (!profile) return false;
+  await fs.rm(profileDir(id), { recursive: true, force: true });
+  await fs.rm(path.join(PUBLIC_MOTION_DIR, `profile-${id}.track.json`), { force: true });
+  await fs.rm(path.join(PUBLIC_MOTION_DIR, `profile-${id}.segments.json`), { force: true });
+  return true;
 }

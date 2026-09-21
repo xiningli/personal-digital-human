@@ -6,7 +6,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AvatarStage, speechFace, type AvatarState, type MotionTrack } from "@/player";
-import { trackPath } from "@/lib/policies";
+import { profileTrackPath, trackPath } from "@/lib/policies";
+import { assembleTrack, splitSentences, type SegmentMatch } from "@/lib/motion-segments";
 import type { MotionPolicy } from "@/lib/types";
 
 interface Props {
@@ -20,16 +21,62 @@ interface Props {
   playing: boolean;
   seed: number;
   label: string;
+  /** What the digital human says this round; profile candidates gesture per sentence. */
+  text?: string;
   onClips?: (names: string[]) => void;
 }
 
-export default function MotionStage({ policy, avatar, audioPath, level, playing, seed, label, onClips }: Props) {
+/**
+ * Assembled tracks, memoised by profile and text: two candidates of the same profile in one
+ * round share one match call, and re-rendering a round never re-embeds the same text.
+ */
+const assembledCache = new Map<string, Promise<MotionTrack | null>>();
+
+/**
+ * Pick a gesture segment per sentence and splice them into one track. Returns null — the
+ * caller then plays the whole track — when the profile has no segments or the match route
+ * cannot help: per-sentence gestures are an upgrade, never a requirement.
+ */
+async function assembleForText(profileId: string, text: string, track: MotionTrack): Promise<MotionTrack | null> {
+  const sentences = splitSentences(text);
+  if (!sentences.length) return null;
+  const segRes = await fetch(`/motion/profile-${profileId}.segments.json`);
+  if (!segRes.ok) return null;
+  const segFile = await segRes.json();
+  if (!Array.isArray(segFile?.segments) || !segFile.segments.length) return null;
+  const matchRes = await fetch(`/api/profiles/${profileId}/match`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ texts: sentences }),
+  });
+  if (!matchRes.ok) return null;
+  const { matches } = (await matchRes.json()) as { matches: (SegmentMatch | null)[] };
+  const picks = (matches ?? []).filter((m): m is SegmentMatch => !!m)
+    .map((m) => ({ startFrame: m.startFrame, endFrame: m.endFrame }));
+  if (!picks.length) return null;
+  return assembleTrack(track, picks);
+}
+
+function assembledTrack(profileId: string, text: string, track: MotionTrack): Promise<MotionTrack | null> {
+  const key = `${profileId}\n${text}`;
+  let p = assembledCache.get(key);
+  if (!p) {
+    p = assembleForText(profileId, text, track).catch(() => null);
+    assembledCache.set(key, p);
+  }
+  return p;
+}
+
+export default function MotionStage({ policy, avatar, audioPath, level, playing, seed, label, text, onClips }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<AvatarStage | null>(null);
   const [loadState, setLoadState] = useState<AvatarState>("loading");
   const status = loadState;
   const generated = policy.source === "generated";
-  const url = generated ? trackPath(audioPath, policy.model ?? "") : null;
+  // Generated and profile candidates both play a recorded track; only where it lives differs.
+  const url = generated ? trackPath(audioPath, policy.model ?? "")
+    : policy.source === "profile" ? profileTrackPath(policy.profileId ?? "")
+    : null;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -37,8 +84,8 @@ export default function MotionStage({ policy, avatar, audioPath, level, playing,
     let cancelled = false;
     let stage: AvatarStage | null = null;
     let raf = 0;
-    // A generated candidate needs its track before the rig can be built, because the track
-    // becomes the speaking clip.
+    // A generated or profile candidate needs its track before the rig can be built, because
+    // the track becomes the speaking clip.
     const build = (track?: MotionTrack) => {
       if (cancelled || !canvas) return;
       stage = new AvatarStage({
@@ -53,13 +100,21 @@ export default function MotionStage({ policy, avatar, audioPath, level, playing,
     };
     if (url) {
       fetch(url).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`no track at ${url}`))))
-        .then((t: MotionTrack) => build(t))
+        .then(async (t: MotionTrack) => {
+          // A profile candidate with a round text swaps the whole-track loop for gestures
+          // matched per sentence; any failure quietly keeps the whole track.
+          if (policy.source === "profile" && policy.profileId && text?.trim()) {
+            build((await assembledTrack(policy.profileId, text, t)) ?? t);
+          } else {
+            build(t);
+          }
+        })
         .catch(() => { if (!cancelled) setLoadState("failed"); });
     } else {
       build();
     }
     return () => { cancelled = true; cancelAnimationFrame(raf); stage?.loseContext(); stageRef.current = null; };
-  }, [policy.id, policy.clip, url, avatar, seed]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [policy.id, policy.clip, policy.source, policy.profileId, url, avatar, seed, text]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { stageRef.current?.setMotion(playing ? "speaking" : "idle"); }, [playing]);
 
@@ -77,8 +132,9 @@ export default function MotionStage({ policy, avatar, audioPath, level, playing,
       <div className="absolute top-2 left-3 text-white/90 font-mono text-lg font-semibold">{label}</div>
       {status !== "ready" && (
         <div className="absolute inset-0 grid place-items-center text-center text-sm text-white/70 px-6">
-          {status === "loading" ? (generated ? "loading generated motion…" : "loading avatar…")
+          {status === "loading" ? (url ? "loading motion track…" : "loading avatar…")
             : generated ? "no generated track for this clip (motion/build_tracks.py)"
+            : policy.source === "profile" ? "no track for this profile (is it still ready?)"
             : "avatar failed to load (bash scripts/import-avatar.sh)"}
         </div>
       )}

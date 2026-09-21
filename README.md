@@ -9,7 +9,7 @@ export as training data for a gesture policy.
 ## Run
 
 ```bash
-bash scripts/import-avatar.sh     # copies the avatar with the Mixamo clips from ~/digital-human/personal-site (never committed)
+bash scripts/import-avatar.sh     # copies the avatar with the Mixamo clips from ~/digital-human/personal-site (never committed), then repairs the animation tracks (clean- + fix-avatar-motion.mjs)
 npm install
 npm run dev                       # http://<host>:3020/arena
 ```
@@ -32,6 +32,14 @@ cannot be drawn and the page says so.
 
 Method, trial types, ranking and export: [docs/protocol.md](docs/protocol.md).
 
+## Motion profiles
+
+The `/profiles` page is the motion analogue of the voice studio's voice profiles: paste a
+YouTube URL or upload a short clip of someone whose body language you admire, and GVHMR
+extracts how they move (`motion/extract/`), retargets it onto the avatar, and adds it to the
+arena's candidate pool, where preference voting ranks it against mocap clips and generated
+motion.
+
 ## API
 
 | Method | Route | Body / result |
@@ -43,11 +51,15 @@ Method, trial types, ranking and export: [docs/protocol.md](docs/protocol.md).
 | GET | `/api/arena/export` | `preference-pairs.jsonl` (`?format=json`) |
 | GET | `/api/report` | Markdown report per voice checkpoint |
 | GET | `/api/tts` | voice studio health |
+| GET / POST | `/api/profiles` | list profiles; add one (`{name, url, start?, duration?}` or multipart `file` + `name`) |
+| GET / DELETE | `/api/profiles/[id]` | one profile; delete it and its track |
 
 ## Data (ignored by git)
 
 `data/arena-rounds.json`, `data/arena-votes.jsonl`, `public/audio/arena/*.wav` (the owner's
-cloned voice), `public/assets/model-clips.glb` (Mixamo clips, see `THIRD_PARTY.md`).
+cloned voice), `public/assets/model-clips.glb` (Mixamo clips, see `THIRD_PARTY.md`),
+`data/profiles/<id>/` (profile clip, extracted motion, run log) and
+`public/motion/profile-<id>.track.json` (the served track).
 
 ## Verification
 

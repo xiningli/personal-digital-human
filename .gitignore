@@ -37,3 +37,6 @@ __pycache__/
 /motion/extract/videos/
 /motion/extract/out/
 /motion/extract/outputs/
+
+# ref_means.json is the refinement baseline (committed); beat2/ is FGD reference data (ignored)
+!/motion/reference/ref_means.json

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import MotionStage from "./MotionStage";
 import Leaderboard from "./Leaderboard";
+import { useLoudness } from "./useLoudness";
 import { LINE_BANK } from "@/lib/policies";
 import type { ArenaRound, ArenaVote, CandidateRating } from "@/lib/types";
 
@@ -11,43 +12,6 @@ const SCALES: { key: keyof CandidateRating; label: string; hint: string }[] = [
   { key: "fit", label: "Fits the words", hint: "1 unrelated to what is said … 5 moves with the phrasing" },
   { key: "likeness", label: "Like me", hint: "1 not how I move … 5 that is me" },
 ];
-
-/** Loudness of a playing <audio>, 0..1, scaled by its own loudest window (the site's rule). */
-function useLoudness(audio: HTMLAudioElement | null) {
-  const analyser = useRef<AnalyserNode | null>(null);
-  const buffer = useRef<Float32Array<ArrayBuffer> | null>(null);
-  const peak = useRef(0.001);
-  const smoothed = useRef(0);
-  const lastAt = useRef(0);
-  useEffect(() => {
-    if (!audio) return;
-    const ctx = new AudioContext();
-    const source = ctx.createMediaElementSource(audio);
-    const node = ctx.createAnalyser();
-    node.fftSize = 1024;
-    source.connect(node); node.connect(ctx.destination);
-    analyser.current = node;
-    buffer.current = new Float32Array(node.fftSize);
-    const resume = () => { void ctx.resume(); };
-    audio.addEventListener("play", resume);
-    return () => { audio.removeEventListener("play", resume); void ctx.close(); analyser.current = null; };
-  }, [audio]);
-  return useCallback(() => {
-    const node = analyser.current, buf = buffer.current;
-    if (!node || !buf) return 0;
-    node.getFloatTimeDomainData(buf);
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
-    const rms = Math.sqrt(sum / buf.length);
-    if (rms > peak.current) peak.current = rms;
-    const target = Math.min(1, rms * Math.min(6, 0.4 / peak.current));
-    const now = performance.now();
-    const dt = Math.min(0.1, (now - lastAt.current) / 1000); lastAt.current = now;
-    const k = 1 - Math.exp(-dt / (target > smoothed.current ? 0.045 : 0.11));
-    smoothed.current += (target - smoothed.current) * k;
-    return smoothed.current;
-  }, []);
-}
 
 export default function ArenaPanel() {
   const [category, setCategory] = useState("any");
@@ -159,7 +123,7 @@ export default function ArenaPanel() {
           <div className="grid grid-cols-2 gap-4">
             {round.candidates.map((c) => (
               <div key={c.id} className="space-y-3">
-                <MotionStage policy={c.policy} avatar={round.avatar} audioPath={round.audioPath} level={level} playing={playing} seed={round.seed} label={c.label} onClips={setClips} />
+                <MotionStage policy={c.policy} avatar={round.avatar} audioPath={round.audioPath} level={level} playing={playing} seed={round.seed} label={c.label} text={round.text} onClips={setClips} />
                 <button onClick={() => setWinner(c.id)}
                   className={`w-full px-3 py-2 rounded-lg border ${winner === c.id ? "bg-gray-900 text-white border-gray-900" : "bg-white hover:bg-gray-50"}`}>
                   {c.label} moves better

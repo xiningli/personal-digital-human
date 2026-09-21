@@ -40,6 +40,11 @@ export function trackPath(audioPath: string, model: string): string {
   return `/motion/${stem}.${model}.json`;
 }
 
+/** Where a profile's retargeted track is served from: one file per profile. */
+export function profileTrackPath(profileId: string): string {
+  return `/motion/profile-${profileId}.track.json`;
+}
+
 export function designSpace(): MotionPolicy[] {
   const clips: MotionPolicy[] = SPEAKING_CLIPS.map((clip) => ({
     id: `clip:${clip}`, name: `${clip} (motion capture)`, source: "clip", clip,
@@ -53,17 +58,19 @@ export function policyById(id: string): MotionPolicy | undefined {
 
 /**
  * Two distinct candidates, drawn with inverse-frequency weighting over how often each has
- * already been served, so the table fills evenly instead of by chance.
+ * already been served, so the table fills evenly instead of by chance. The pool defaults to
+ * the design space; the arena route passes profiles merged in (they are data, not code).
  */
 export function samplePair(
   served: Map<string, number>,
   rng: () => number = Math.random,
   usable: (p: MotionPolicy) => boolean = () => true,
+  pool: MotionPolicy[] = designSpace(),
 ): [MotionPolicy, MotionPolicy] {
-  const pool = designSpace().filter(usable);
+  const candidates = pool.filter(usable);
   const weight = (p: MotionPolicy) => 1 / (1 + (served.get(p.id) ?? 0));
   const draw = (exclude?: MotionPolicy): MotionPolicy => {
-    const items = pool.filter((p) => p.id !== exclude?.id);
+    const items = candidates.filter((p) => p.id !== exclude?.id);
     const total = items.reduce((s, p) => s + weight(p), 0);
     let r = rng() * total;
     for (const p of items) { r -= weight(p); if (r <= 0) return p; }

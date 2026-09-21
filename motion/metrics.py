@@ -142,9 +142,31 @@ def fgd_against_reference(poses: np.ndarray, device: torch.device) -> float | No
 GATES = {"diversity_min": 1.0, "foot_skate_max_cm": 3.0, "foot_float_mean_max_cm": 3.0}
 
 
+def gate_overrides(argv: list[str]) -> list[str]:
+    """--<gate> X overrides GATES (key dashes, e.g. --foot-float-mean-max-cm 4.5), e.g. for
+    footage whose feet are not visible (black trousers on a black stage) where foot float is
+    an estimate, not a fact. Returns the remaining (positional) args."""
+    positional = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        key = a[2:].replace("-", "_") if a.startswith("--") else ""
+        if key in GATES and i + 1 < len(argv):
+            try:
+                GATES[key] = float(argv[i + 1])
+                i += 2
+                continue
+            except ValueError:
+                pass
+        if not a.startswith("--"):
+            positional.append(a)
+        i += 1
+    return positional
+
+
 def main() -> None:
     check = "--check" in sys.argv
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = gate_overrides(sys.argv[1:])
     if len(args) < 2:
         print(__doc__)
         raise SystemExit(2)

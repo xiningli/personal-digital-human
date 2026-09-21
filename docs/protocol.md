@@ -71,6 +71,79 @@ Two uses:
 Per-candidate notes are written for a reader who cannot see the round: "hands: too busy;
 want them still on the short words" — attribute, what was seen, what is wanted.
 
+## 5. Profiles: motion learned from video
+
+A profile is a person whose body language the owner admires, captured from a video clip:
+the owner pastes a YouTube URL (optionally with start and duration seconds) or uploads a
+file, and the server runs the extraction pipeline of `motion/extract/` on it — fetch and
+trim to 30 fps, GVHMR with a static camera to SMPL-X poses, retarget onto the avatar's rig,
+then the same two checks every generated track passes (`verify_retarget.py --check` for the
+transfer, `metrics.py --check` for floating feet, skating and a frozen body). Between them,
+`motion/refine_track.py` recenters the track onto the avatar's own idea of elegant: GVHMR
+tracks arrive with the forearms chronically bent (~85 deg off rest where the capture clips
+sit at ~40) and the hips twisting, so the arms and torso chain are recentered onto the
+time-mean pose of the asset's "Talking" clip, the hips' dynamic component is shrunk, and
+the estimated legs are converged toward the rest pose. A clipping guard rides on the
+recentering: per-frame FK compares each hand joint against body capsules whose surfaces
+are calibrated from the asset's own clips (the closest any approved capture ever comes),
+and wherever the recentered arm would cross that line the recentering weight fades to
+zero over a ±9-frame Hann window — the raw pose, measured safe there, takes over — with
+an escape rotation on the forearm for the rare frame the raw pose itself penetrates. The
+run refuses to finish quietly if any frame still ends up deep (d < 0.7 × surface). The
+raw track is kept as `track.unrefined.json` next to the profile; a refine failure never
+fails the profile by itself.
+
+What the player finally serves is gated separately, because every check above fired on
+the upstream npz while refine rewrote the track afterwards: `motion/check_track.py`
+(`--check`, gate overrides in metrics.py's style) FKs the refined track.json on the glb
+skeleton — pure rotation, bind translations, exactly the player's `trackToClip`
+convention — and fails the profile on four measurements: hand clipping against the same
+calibrated capsule surfaces the guard uses (deep penetration must be zero frames, touch
+at most 20), the lower toe's world height (mean must sit in [0.02, 0.08] m around the
+sole offset the runtime grounds to), planted-foot horizontal drift (mean at most
+0.25 cm/frame, calibrated as ~2x the worst built-in clip's baseline; `--calibrate`
+prints the per-clip baseline), and peak quaternion angular velocity (max 600 deg/s,
+against teleport/seizure flicker). It is also what judges the unrefined track when
+refine itself failed, since the gate runs after the last step that mutates the track.
+Clips of about
+30 s with one person in view, camera not moving, work best. Ready profiles join the arena's
+candidate pool as `source: "profile"` and are drawn, weighted and ranked exactly like mocap
+clips and generated tracks.
+
+A profile's motion is decoupled from the audio of the video it came from. Every candidate
+in a round moves to the round's shared audio — the profile's track plays under the same line
+as its opponent — so the comparison stays blind and fair: what is ranked is how the person
+moves, not what they happened to be saying.
+
+The audio is not thrown away, though: after the quality gates, `motion/extract/segment.py`
+transcribes it (faster-whisper, word timestamps grouped into sentences) and cuts the track
+into sentence-level gesture segments, each with a semantic embedding
+(sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2, 384-d, L2-normalized).
+The segments contract is versioned JSON:
+
+```json
+{ "version": 1, "fps": 30, "frames": 900,
+  "embedModel": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "segments": [ { "i": 0, "startS": 0.32, "endS": 2.87, "startFrame": 10, "endFrame": 86,
+                  "text": "...", "embedding": [384 floats] } ] }
+```
+
+`data/profiles/<id>/segments.json` keeps the embeddings (server-side runtime matching only);
+`public/motion/profile-<id>.segments.json` is the same structure with `embedding` dropped,
+for frontend preview and slicing. Segmentation is additive and never gates readiness: a
+speechless clip or a whisper failure yields a ready profile with `hasSegments` unset.
+
+The extracted audio (16 kHz mono, `data/profiles/<id>/audio.wav`) is served by
+`GET /api/profiles/<id>/audio` — `audio/wav`, streaming, with byte-range support — so the
+profiles page can play a profile's motion with the voice it was extracted from: the whole
+take looping in sync, or one sentence's frame range against its startS..endS.
+
+The limitations are honest ones, inherited from the pipeline. GVHMR predicts only the 22
+body joints: the fingers, jaw and eyes stay in the bind pose, so a profile's hands are
+relaxed where the real person's may not be. And in a medium shot — the usual framing of a
+talk — the legs are out of frame or barely visible, so leg motion is the least reliable part
+of what is extracted; the foot metrics gate the worst of it, and the arena ranks the rest.
+
 ## References
 
 - Bradley & Terry (1952), rank analysis of incomplete block designs.

@@ -16,11 +16,51 @@ export interface MotionPolicy {
   /** Stable id; the ranking key. */
   id: string;
   name: string;
-  source: "clip" | "generated";
+  source: "clip" | "generated" | "profile";
   /** Motion-capture clip baked into the avatar, for source "clip". */
   clip: string | null;
   /** The model and checkpoint that produced the track, for source "generated". */
   model?: string;
+  /** The motion profile the track came from, for source "profile". */
+  profileId?: string;
+}
+
+/**
+ * A person whose body language the owner admires, learned from video (docs/protocol.md §5):
+ * a clip is fetched or uploaded, GVHMR extracts the motion, and the retargeted track joins
+ * the arena's candidate pool as `source: "profile"`. Artifacts live in data/profiles/<id>/.
+ */
+export interface MotionProfile {
+  id: string;
+  name: string;
+  createdAt: string;
+  sourceType: "youtube" | "upload";
+  /** The URL, or the original filename. */
+  sourceRef: string;
+  status: "processing" | "ready" | "failed";
+  error?: string;
+  /** Set when ready: the public track the player loads. */
+  trackPath?: string;
+  durationS?: number;
+  stats?: { worstLimbDeg: number; footFloatCm: number; footSkateCmPerFrame: number; diversity: number };
+  /** Set when segment.py produced data/profiles/<id>/segments.json (docs/protocol.md §5). */
+  hasSegments?: boolean;
+}
+
+/**
+ * One sentence of the profile clip's speech aligned to a frame range of the track
+ * (motion/extract/segment.py). The data-dir segments.json carries `embedding` for
+ * server-side runtime matching; the public profile-<id>.segments.json drops it.
+ */
+export interface MotionSegment {
+  i: number;
+  startS: number;
+  endS: number;
+  startFrame: number;
+  endFrame: number;
+  text: string;
+  /** 384-d, L2-normalized (paraphrase-multilingual-MiniLM-L12-v2). Server-side only. */
+  embedding?: number[];
 }
 
 /** Joint rotations per frame for a model-generated candidate (radians, XYZ Euler, per bone). */
