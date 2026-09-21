@@ -83,7 +83,12 @@ transfer, `metrics.py --check` for floating feet, skating and a frozen body). Be
 tracks arrive with the forearms chronically bent (~85 deg off rest where the capture clips
 sit at ~40) and the hips twisting, so the arms and torso chain are recentered onto the
 time-mean pose of the asset's "Talking" clip, the hips' dynamic component is shrunk, and
-the estimated legs are converged toward the rest pose. A clipping guard rides on the
+the estimated legs are converged toward the rest pose. Fingers are synthesized:
+GVHMR has no hand keypoints, so a raw track freezes all 40 finger bones; the pass gives
+each one the "Talking" clip's time-mean local rotation (a natural speaking hand, not the
+flat bind pose) plus a slow deterministic drift — spectral noise brick-walled to
+0.3-0.8 Hz, 3-6 deg peak per bone, fixed seed, seamless under looping — and up to 4 deg
+of opening while the wrist moves fast. A clipping guard rides on the
 recentering: per-frame FK compares each hand joint against body capsules whose surfaces
 are calibrated from the asset's own clips (the closest any approved capture ever comes),
 and wherever the recentered arm would cross that line the recentering weight fades to

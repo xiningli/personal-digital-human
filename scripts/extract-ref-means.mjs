@@ -17,11 +17,17 @@ import { NodeIO } from '@gltf-transform/core';
 import * as THREE from 'three';
 
 const FPS = 30;
+const FINGER_BONES = ['Left', 'Right'].flatMap((s) =>
+  ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'].flatMap((f) =>
+    [1, 2, 3, 4].map((k) => `${s}Hand${f}${k}`)));
 const DEFAULT_BONES = [
   'Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head',
   'LeftShoulder', 'LeftArm', 'LeftForeArm', 'LeftHand',
   'RightShoulder', 'RightArm', 'RightForeArm', 'RightHand',
   'LeftUpLeg', 'LeftLeg', 'RightUpLeg', 'RightLeg',
+  // Finger means feed refine_track.py's finger pass: Talking's time-averaged local
+  // rotation per finger bone is the "natural speaking hand" base pose (bind is flat).
+  ...FINGER_BONES,
 ];
 
 function dot4(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]; }

@@ -31,12 +31,12 @@ shrinks around the track's own mean:
         the feet, so the FK report at the end checks the toes still land at sole height
         (player/ground.ts: SOLE_BELOW_TOE = 0.0524); if they do not, lower --alpha-legs.
 
-  legs  (UpLeg/Leg): GVHMR estimated them from a lecturer whose feet are out of frame, so
-        they are not trusted at all: dynamics shrunk by 1/2 toward the track mean, then the
-        result converged toward the rig's rest pose by alpha_legs * 0.5. Foot/ToeBase are
-        left alone so the baked foot contact is not disturbed. Straightening the legs moves
-        the feet, so the FK report at the end checks the toes still land at sole height
-        (player/ground.ts: SOLE_BELOW_TOE = 0.0524); if they do not, lower --alpha-legs.
+Fingers (version 3). GVHMR does not predict fingers, so a raw track freezes all 40 finger
+bones and the hands read as plaster casts. No capture is retargeted onto them either, so
+they are synthesized: the Talking clip's time-mean local rotation per bone (a natural
+speaking hand; the bind pose is flat and stiff) plus a slow deterministic drift — spectral
+noise brick-walled to 0.3-0.8 Hz, 3-6 deg peak per bone, fixed seed, seamless under looping
+— and up to 4 deg of opening while the wrist moves fast. See finger_pass() for the recipe.
 
 Clipping guard (version 2). The arm recentering is a constant rotation: it pulls every
 frame closer to the body by the same amount, and on the Brunton track that pushed the
@@ -102,6 +102,17 @@ CAPSULES = {
 }
 GUARD_RADIUS = 9          # Hann half-window, frames (±0.3 s at 30 fps)
 GUARD_ITERATIONS = 4
+
+# Finger pass: GVHMR does not predict fingers, so a raw track freezes all 40 finger
+# bones (measured 0-1.6 deg of travel where a forearm travels 65-71) and the hands read
+# as plaster casts. No capture is retargeted onto them either; instead each finger bone
+# gets the Talking clip's time-mean local rotation (the rig's "natural speaking hand";
+# bind pose is flat and stiff) plus a slow drift:
+FINGER_BONES = [f"{s}Hand{f}{k}" for s in ("Left", "Right") for f in FINGERS for k in (1, 2, 3, 4)]
+FINGER_SEED = 20260921        # fixed: same input track -> same fingers
+FINGER_AMP_DEG = (3.0, 6.0)   # per-bone peak of the smooth noise, uniform in this range
+FINGER_FREQ_HZ = (0.3, 0.8)   # per-bone lowpass cutoff, uniform in this range
+FINGER_OPEN_MAX_DEG = 4.0     # extra finger opening at the fastest wrist motion
 
 IDENTITY = np.array([0.0, 0.0, 0.0, 1.0])  # xyzw
 
@@ -361,6 +372,85 @@ def slerp_to_identity_batch(delta: np.ndarray, alphas: np.ndarray) -> np.ndarray
                      axis[2] * np.sin(half), np.cos(half)], axis=-1)
 
 
+def finger_pass(quats: np.ndarray, idx: dict[str, int], ref_means: dict[str, list[float]],
+                fps: float, report: list[str]) -> dict | None:
+    """Replace the frozen finger series with the Talking mean pose plus a slow drift.
+
+    Overwrites rather than adds, so re-running on an already-fingered track is a no-op
+    by construction. Deterministic: one fixed seed drives amplitude, cutoff and the
+    noise itself, so the same input track yields byte-identical fingers.
+
+    Per bone: q(t) = delta(t) x base, where base is the clip's time-mean local rotation
+    and delta(t) is a small rotation around the base's own curl axis. The drift is
+    spectral, not filtered-after-the-fact: white noise is FFTed, every bin above the
+    bone's cutoff (0.3-0.8 Hz) is zeroed, and the inverse FFT gives a drift with exactly
+    no energy above 0.8 Hz — and, being circular, no seam when the track loops.
+    On top of the drift the fingers open up to FINGER_OPEN_MAX_DEG when the wrist moves
+    fast (gesturing hands open, resting hands curl), a linear coupling between the
+    wrist's median and p95 angular speed, brick-walled into the same band.
+    """
+    present = [b for b in FINGER_BONES if b in idx and b in ref_means]
+    missing = [b for b in FINGER_BONES if b not in present]
+    if not present:
+        report.append("  finger pass skipped: no finger bones in track or reference")
+        return None
+    if missing:
+        report.append(f"  finger pass: {len(missing)} bones missing ({missing[:3]}...)")
+
+    frames = quats.shape[0]
+    rng = np.random.default_rng(FINGER_SEED)
+
+    def brickwall(x: np.ndarray, fc: float) -> np.ndarray:
+        """Zero every FFT bin above fc Hz; the inverse transform is circular, which also
+        makes the result seamless under the player's LoopRepeat."""
+        X = np.fft.rfft(x)
+        X[np.fft.rfftfreq(len(x), 1.0 / fps) > fc] = 0.0
+        return np.fft.irfft(X, len(x))
+
+    def lowpass_noise(fc: float) -> np.ndarray:
+        out = brickwall(rng.standard_normal(frames), fc)
+        return out / np.abs(out).max()
+
+    # wrist angular speed per side (deg/s); constant left-multiplied corrections don't
+    # change it, so measuring before the arm recenter is exact.
+    open_deg: dict[str, np.ndarray] = {}
+    for side in ("Left", "Right"):
+        hand = f"{side}Hand"
+        if hand not in idx:
+            continue
+        q = quats[:, idx[hand]]
+        dq = qmul(qinv(q[:-1]), q[1:])
+        w = np.degrees(2.0 * np.arccos(np.clip(np.abs(dq[:, 3]), 0.0, 1.0))) * fps
+        w = brickwall(np.concatenate([[w[0]], w]), 0.8)
+        w50, w95 = np.percentile(w, 50), np.percentile(w, 95)
+        # the clip is nonlinear and reintroduces high frequencies at the onset kink,
+        # so brickwall again after it
+        open_deg[side] = brickwall(
+            np.clip((w - w50) * FINGER_OPEN_MAX_DEG / max(w95 - w50, 1e-6),
+                    0.0, FINGER_OPEN_MAX_DEG), 0.8)
+
+    for b in present:
+        base = np.array(ref_means[b], dtype=float)
+        axis = base[:3]
+        n = np.linalg.norm(axis)
+        axis = axis / n if n > 1e-3 else np.array([1.0, 0.0, 0.0])
+        amp = np.radians(FINGER_AMP_DEG[0] + (FINGER_AMP_DEG[1] - FINGER_AMP_DEG[0]) * rng.random())
+        fc = FINGER_FREQ_HZ[0] + (FINGER_FREQ_HZ[1] - FINGER_FREQ_HZ[0]) * rng.random()
+        noise = lowpass_noise(fc)
+        side = "Left" if b.startswith("Left") else "Right"
+        theta = amp * noise - np.radians(open_deg.get(side, 0.0))
+        delta = Rotation.from_rotvec(axis[None, :] * theta[:, None]).as_quat()
+        quats[:, idx[b]] = qmul(delta, np.broadcast_to(base, (frames, 4)))
+
+    report.append(f"  finger pass: {len(present)} bones, Talking-mean base + "
+                  f"{FINGER_AMP_DEG[0]:g}-{FINGER_AMP_DEG[1]:g} deg drift at "
+                  f"{FINGER_FREQ_HZ[0]:g}-{FINGER_FREQ_HZ[1]:g} Hz, wrist-open "
+                  f"{FINGER_OPEN_MAX_DEG:g} deg, seed {FINGER_SEED}")
+    return {"version": 1, "seed": FINGER_SEED, "bones": len(present),
+            "amp_deg": list(FINGER_AMP_DEG), "freq_hz": list(FINGER_FREQ_HZ),
+            "wrist_open_deg": FINGER_OPEN_MAX_DEG}
+
+
 def bind_locals(skel: Skeleton) -> dict[str, np.ndarray]:
     """Per-node bind local rotation (xyzw) by name."""
     return {skel.names[i]: skel.bind_rot[i] for i in skel.order}
@@ -392,6 +482,8 @@ def main() -> None:
                          "Measured on the Brunton profile: stronger convergence grounds the feet "
                          "better (the asymmetry came from the GVHMR legs, not from the rest pose), "
                          "so 1.5 -- nearly at rest, a little residual knee life")
+    ap.add_argument("--no-fingers", action="store_true",
+                    help="skip the finger pass (keep the track's frozen finger series)")
     ap.add_argument("--no-guard", action="store_true",
                     help="skip the clipping guard (v1 behavior: constant arm recentering)")
     ap.add_argument("--force", action="store_true", help="re-refine a track that already carries the marker")
@@ -457,7 +549,12 @@ def main() -> None:
         quats[:, idx[bone]] = slerp_batch(rest, shrunk, 1.0 - args.alpha_legs * 0.5)
         report.append(f"  {bone:15s} dynamics x0.5, rest-converge x{args.alpha_legs * 0.5:.2f}")
 
-    # 3. arms: recenter onto the reference mean, dynamics untouched. With the guard on,
+    # 3. fingers: the track's 40 finger bones are frozen (GVHMR has no hand keypoints).
+    #    Replace with the Talking-mean base pose plus a slow deterministic drift. Before
+    #    the arms/guard so the guard's FK sees the final finger pose.
+    fingers = None if args.no_fingers else finger_pass(quats, idx, ref_means, track["fps"], report)
+
+    # 4. arms: recenter onto the reference mean, dynamics untouched. With the guard on,
     #    the per-frame recentering weight fades to 0 wherever the recentered pose would
     #    put a hand closer to the body than any capture clip ever comes (see docstring).
     arm_orig = {b: quats[:, idx[b]].copy() for b in ARM_BONES if b in idx}
@@ -605,13 +702,14 @@ def main() -> None:
         **track,
         "quats": np.round(quats, 4).reshape(-1).tolist(),
         "refined": {
-            "version": 2,
+            "version": 3,
             "alpha_arms": args.alpha_arms,
             "alpha_hips": args.alpha_hips,
             "alpha_hips_dynamic": args.alpha_hips_dynamic,
             "alpha_torso": args.alpha_torso,
             "alpha_legs": args.alpha_legs,
             "reference": f"{ref['source']}:{ref['clip']}",
+            "fingers": fingers,
             "guard": guard,
         },
     }
