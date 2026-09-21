@@ -30,3 +30,10 @@ __pycache__/
 
 # generated motion tracks (built by motion/build_tracks.py from the owner-voiced clips)
 /public/motion/
+
+# video-extraction workspace: venv, GVHMR checkout + checkpoints, downloaded videos, outputs
+/motion/extract/.venv/
+/motion/extract/GVHMR/
+/motion/extract/videos/
+/motion/extract/out/
+/motion/extract/outputs/

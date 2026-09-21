@@ -82,3 +82,15 @@ about the floor. The player does it for every motion source.
 A diffusion model as a second candidate, ranked against EMAGE and the captures in the arena.
 DiffSHEG is the obvious one and needs porting to modern torch first: it pins torch 1.13.1 /
 CUDA 11.7, which has no kernels for Blackwell.
+
+## Extracting motion from video (GVHMR)
+
+`extract/` turns a monocular video into the same EMAGE-contract npz: `fetch.sh` downloads
+and trims a clip (YouTube via yt-dlp, or any local mp4), `extract.py` runs GVHMR headless
+(static camera, no DPVO, no rendering) and writes `poses` (T, 165) with the world frame
+pre-rotated so the person faces the stage's camera. retarget.py, verify_retarget.py and
+metrics.py consume the result unchanged — see `extract/README.md`. First end-to-end clip:
+a 30 s TED segment, worst limb error 0.03°, all metric gates pass, foot float 2 cm mean.
+Fingers/jaw/eyes come out zero (GVHMR predicts no hands/face), so extracted clips read as
+arm-and-torso gesture over the rig's bind hands. Preview any track in the browser with the
+dev page `/player-check?track=<name>` (reads `public/motion/<name>.track.json`).
