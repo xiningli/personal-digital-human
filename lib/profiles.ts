@@ -17,6 +17,9 @@ const EXTRACT = path.join(ROOT, "motion", "extract");
 const MOTION = path.join(ROOT, "motion");
 const AVATAR = path.join(ROOT, "public", "assets", "model-clips.glb");
 const STEP_TIMEOUT_MS = 10 * 60 * 1000;
+/** Shot-aware extraction runs GVHMR per shot in one process; a multi-shot 2-3 min clip
+ * can take 20-40 min, far over the generic step timeout. */
+const EXTRACT_TIMEOUT_MS = 60 * 60 * 1000;
 
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -30,15 +33,15 @@ export async function profilePolicies(): Promise<MotionPolicy[]> {
 
 interface StepResult { stdout: string; stderr: string }
 
-function runStep(log: fs.FileHandle, cmd: string, args: string[], cwd: string): Promise<StepResult> {
+function runStep(log: fs.FileHandle, cmd: string, args: string[], cwd: string, timeoutMs = STEP_TIMEOUT_MS): Promise<StepResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`${path.basename(cmd)} timed out after ${STEP_TIMEOUT_MS / 60000} min`));
-    }, STEP_TIMEOUT_MS);
+      reject(new Error(`${path.basename(cmd)} timed out after ${timeoutMs / 60000} min`));
+    }, timeoutMs);
     child.stdout.on("data", (d) => { stdout += d; void log.write(d); });
     child.stderr.on("data", (d) => { stderr += d; void log.write(d); });
     child.on("error", (e) => { clearTimeout(timer); reject(e); });
@@ -84,7 +87,22 @@ async function extract(profile: MotionProfile, opts: { start?: number; duration?
     // poisons the next run (frame-count mismatch). Give each profile a unique-stem copy.
     const workVideo = path.join(EXTRACT, "videos", `profile-${profile.id}.mp4`);
     await fs.copyFile(source, workVideo);
-    await runStep(log, path.join(EXTRACT, ".venv", "bin", "python"), [path.join(EXTRACT, "extract.py"), workVideo, npz], EXTRACT);
+
+    // Shot-aware routing: an edited clip (talks cutting between a medium shot and close-ups)
+    // defeats a single GVHMR pass, so when the trimmed clip has real cuts the extraction goes
+    // through extract_shots.py (per-shot GVHMR + slerp-crossfade stitching, same npz contract).
+    const detect = await runStep(log, "ffmpeg", [
+      "-hide_banner", "-nostats", "-i", workVideo,
+      "-vf", "select='gt(scene,0.3)',showinfo", "-f", "null", "-",
+    ], EXTRACT);
+    const cuts = (detect.stderr.match(/pts_time:/g) ?? []).length;
+    const shotAware = cuts >= 2;
+    await log.write(`scene detect: ${cuts} cuts at scene>0.3 -> ${shotAware ? "extract_shots.py" : "extract.py"}\n`);
+    const extractScript = path.join(EXTRACT, shotAware ? "extract_shots.py" : "extract.py");
+    const extractArgs = shotAware
+      ? [extractScript, workVideo, npz, path.join(dir, "shots.json")]
+      : [extractScript, workVideo, npz];
+    await runStep(log, path.join(EXTRACT, ".venv", "bin", "python"), extractArgs, EXTRACT, EXTRACT_TIMEOUT_MS);
     await runStep(log, "ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", source, "-vn", "-ar", "16000", "-ac", "1", audio], dir);
     await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "retarget.py"), npz, AVATAR, track], MOTION);
 

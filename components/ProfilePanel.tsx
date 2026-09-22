@@ -150,7 +150,14 @@ export default function ProfilePanel() {
           return (
           <div key={p.id} className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
             <div>
-              <div className="font-semibold text-sm">{p.name}</div>
+              <div className="font-semibold text-sm">
+                {p.name}
+                {p.style && (
+                  <span className={`ml-2 align-middle inline-block rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                    p.style === "stage" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700"
+                  }`}>{p.style === "stage" ? "stage" : "presentation"}</span>
+                )}
+              </div>
               <div className="text-xs text-gray-500 truncate" title={p.sourceRef}>
                 {p.sourceType === "youtube" ? "YouTube" : "upload"} · {p.sourceRef}
               </div>

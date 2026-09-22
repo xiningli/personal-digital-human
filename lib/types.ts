@@ -39,6 +39,12 @@ export interface MotionProfile {
   sourceRef: string;
   status: "processing" | "ready" | "failed";
   error?: string;
+  /**
+   * What kind of speaker the clip shows: "presentation" = podium/slides in view
+   * (e.g. the Brunton lectures), "stage" = open-stage talk (e.g. TED). The two have
+   * visibly different gesture distributions and will be trained separately.
+   */
+  style?: "presentation" | "stage";
   /** Set when ready: the public track the player loads. */
   trackPath?: string;
   durationS?: number;

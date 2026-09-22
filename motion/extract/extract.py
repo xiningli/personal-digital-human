@@ -41,22 +41,33 @@ from hmr4d.utils.pylogger import Log
 from hmr4d.utils.video_io_utils import get_video_lwh, get_video_reader, get_writer
 
 
-def build_cfg(video_path: Path, output_root: Path):
-    with initialize_config_module(version_base="1.3", config_module="hmr4d.configs"):
-        register_store_gvhmr()
-        cfg = compose(
-            config_name="demo",
-            overrides=[
-                f"video_name={video_path.stem}",
-                "static_cam=true",
-                "use_dpvo=false",
-                "verbose=false",
-                f"output_root={output_root}",
-            ],
-        )
+def init_config():
+    """Hydra initialization, once per process. A context manager: compose_cfg() and
+    hydra.utils.instantiate() must run inside it. Split from compose_cfg so
+    extract_shots.py can compose one config per shot in a single process."""
+    return initialize_config_module(version_base="1.3", config_module="hmr4d.configs")
+
+
+def compose_cfg(video_path: Path, output_root: Path):
+    register_store_gvhmr()
+    cfg = compose(
+        config_name="demo",
+        overrides=[
+            f"video_name={video_path.stem}",
+            "static_cam=true",
+            "use_dpvo=false",
+            "verbose=false",
+            f"output_root={output_root}",
+        ],
+    )
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
     Path(cfg.preprocess_dir).mkdir(parents=True, exist_ok=True)
     return cfg
+
+
+def build_cfg(video_path: Path, output_root: Path):
+    with init_config():
+        return compose_cfg(video_path, output_root)
 
 
 def copy_video(video_path: Path, cfg) -> None:
@@ -109,6 +120,72 @@ def load_data_dict(cfg) -> dict:
     }
 
 
+def load_model(cfg):
+    """The GVHMR demo model, eval mode on CUDA. Expensive (2.7 GB HMR2 backbone):
+    extract_shots.py loads it once and predicts every shot with the same instance."""
+    model = hydra.utils.instantiate(cfg.model, _recursive_=False)
+    model.load_pretrained_model(cfg.ckpt_path)
+    return model.eval().cuda()
+
+
+@torch.no_grad()
+def predict(model, cfg) -> dict:
+    return detach_to_cpu(model.predict(load_data_dict(cfg), static_cam=True))
+
+
+def world_fix(global_orient: np.ndarray, transl: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """With static_cam=true, GVHMR's world frame has the person facing -Z while the
+    three.js stage expects the avatar to face +Z toward the camera. Pre-rotate the
+    world frame (global_orient and transl) by a constant yaw so output faces +Z."""
+    from scipy.spatial.transform import Rotation
+
+    R_fix = Rotation.from_rotvec(np.array([0.0, WORLD_YAW_FIX, 0.0])).as_matrix()
+    R_glob = Rotation.from_rotvec(global_orient).as_matrix()      # (T, 3, 3)
+    fixed_orient = Rotation.from_matrix(R_fix[None] @ R_glob).as_rotvec().astype(np.float32)
+    fixed_transl = (R_fix[None] @ transl[..., None])[..., 0].astype(np.float32)
+    return fixed_orient, fixed_transl
+
+
+def video_fps(video_path: Path) -> int:
+    import cv2
+
+    return round(cv2.VideoCapture(str(video_path)).get(cv2.CAP_PROP_FPS)) or 30
+
+
+def save_npz(out_npz: Path, global_orient: np.ndarray, body_pose: np.ndarray,
+             betas10: np.ndarray, transl: np.ndarray, fps: int) -> np.ndarray:
+    """Repack SMPL-X sequences (already world-fixed) into the EMAGE npz contract
+    motion/retarget.py consumes. `betas10` is one (10,) shape vector for the clip —
+    frame 0's for a single-shot extract, the per-shot median for extract_shots.
+    Returns the (T, 55, 3) poses for the sanity report."""
+    T = global_orient.shape[0]
+    poses55 = np.zeros((T, 55, 3), dtype=np.float32)
+    poses55[:, 0] = global_orient
+    poses55[:, 1:22] = body_pose.reshape(T, 21, 3)
+    # joints 22-54 (jaw, eyes, hands) stay zero: GVHMR predicts no face/fingers
+
+    # EMAGE convention is a neutral body (all existing motion/out/*.npz have betas=0), and
+    # retarget.py hard-codes a zero-beta rest pose, so the npz carries zero betas for
+    # consistency. GVHMR's predicted shape is kept in `betas_gvhmr` and in the raw .pt.
+    betas300 = np.zeros(300, dtype=np.float32)
+    betas_gvhmr = np.zeros(300, dtype=np.float32)
+    betas_gvhmr[: betas10.shape[0]] = betas10
+
+    # EMAGE contract (see motion/out/*.npz): poses stored flat (T, 165)
+    np.savez(
+        out_npz,
+        poses=poses55.reshape(T, 165),
+        betas=betas300,
+        betas_gvhmr=betas_gvhmr,
+        expressions=np.zeros((T, 100), dtype=np.float32),
+        trans=transl,
+        model="smplx",
+        gender="neutral",
+        mocap_frame_rate=fps,
+    )
+    return poses55
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -122,62 +199,26 @@ def main() -> None:
     cfg = build_cfg(video_path, HERE / "outputs")
     copy_video(video_path, cfg)
     run_preprocess(cfg)
-    data = load_data_dict(cfg)
 
     Log.info("[HMR4D] Predicting")
-    model = hydra.utils.instantiate(cfg.model, _recursive_=False)
-    model.load_pretrained_model(cfg.ckpt_path)
-    model = model.eval().cuda()
-    pred = detach_to_cpu(model.predict(data, static_cam=True))
+    model = load_model(cfg)
+    pred = predict(model, cfg)
 
     p = pred["smpl_params_global"]
     global_orient = p["global_orient"].numpy()            # (T, 3)
     body_pose = p["body_pose"].numpy()                    # (T, 63)
     betas = p["betas"].numpy()                            # (T, 10)
     transl = p["transl"].numpy()                          # (T, 3)
-    T = global_orient.shape[0]
 
-    # With static_cam=true, GVHMR's world frame has the person facing -Z while the
-    # three.js stage expects the avatar to face +Z toward the camera. Pre-rotate the
-    # world frame (global_orient and transl) by a constant yaw so output faces +Z.
-    from scipy.spatial.transform import Rotation
-
-    R_fix = Rotation.from_rotvec(np.array([0.0, WORLD_YAW_FIX, 0.0])).as_matrix()
-    R_glob = Rotation.from_rotvec(global_orient).as_matrix()      # (T, 3, 3)
-    global_orient = Rotation.from_matrix(R_fix[None] @ R_glob).as_rotvec().astype(np.float32)
-    transl = (R_fix[None] @ transl[..., None])[..., 0].astype(np.float32)
+    global_orient, transl = world_fix(global_orient, transl)
     # keep the raw sidecar in the same (fixed) world frame
     p["global_orient"] = torch.from_numpy(global_orient)
     p["transl"] = torch.from_numpy(transl)
     torch.save(pred, out_npz.with_suffix(".raw.pt"))
 
-    poses55 = np.zeros((T, 55, 3), dtype=np.float32)
-    poses55[:, 0] = global_orient
-    poses55[:, 1:22] = body_pose.reshape(T, 21, 3)
-    # joints 22-54 (jaw, eyes, hands) stay zero: GVHMR predicts no face/fingers
-
-    # EMAGE convention is a neutral body (all existing motion/out/*.npz have betas=0), and
-    # retarget.py hard-codes a zero-beta rest pose, so the npz carries zero betas for
-    # consistency. GVHMR's predicted shape is kept in `betas_gvhmr` and in the raw .pt.
-    betas300 = np.zeros(300, dtype=np.float32)
-    betas_gvhmr = np.zeros(300, dtype=np.float32)
-    betas_gvhmr[: betas.shape[1]] = betas[0]
-
-    import cv2
-
-    fps = round(cv2.VideoCapture(str(video_path)).get(cv2.CAP_PROP_FPS)) or 30
-    # EMAGE contract (see motion/out/*.npz): poses stored flat (T, 165)
-    np.savez(
-        out_npz,
-        poses=poses55.reshape(T, 165),
-        betas=betas300,
-        betas_gvhmr=betas_gvhmr,
-        expressions=np.zeros((T, 100), dtype=np.float32),
-        trans=transl,
-        model="smplx",
-        gender="neutral",
-        mocap_frame_rate=fps,
-    )
+    fps = video_fps(video_path)
+    poses55 = save_npz(out_npz, global_orient, body_pose, betas[0], transl, fps)
+    T = global_orient.shape[0]
 
     # ---- sanity report ----
     assert np.isfinite(poses55).all(), "non-finite values in poses!"

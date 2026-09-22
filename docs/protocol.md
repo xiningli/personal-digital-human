@@ -110,6 +110,39 @@ sole offset the runtime grounds to), planted-foot horizontal drift (mean at most
 prints the per-clip baseline), and peak quaternion angular velocity (max 600 deg/s,
 against teleport/seizure flicker). It is also what judges the unrefined track when
 refine itself failed, since the gate runs after the last step that mutates the track.
+
+Edited clips take a different extraction path. A talk that cuts between a full-body
+medium shot and close-ups (TED and TEDx are cut like this, roughly every 10-15 s)
+defeats a single GVHMR pass — the tracker and ViTPose see framing jumps and the
+static-camera assumption only holds per shot. After the trim, the pipeline runs one
+ffmpeg scene-detection pass (`select=gt(scene,0.3)`); two or more cuts route the clip
+to `motion/extract/extract_shots.py` instead of `extract.py` (the decision is in
+run.log). extract_shots splits the clip at the cuts (shots under 1.5 s merged into
+their longer neighbour), predicts every shot with one GVHMR instance in a single
+process, repairs feet-hidden shots, and stitches the per-shot SMPL-X sequences with an
+equal-length crossfade at each seam: an N-frame window (0.4 s) centred on the cut
+samples both sides at half rate — the outgoing shot's last N/2 frames and the
+incoming shot's first N/2 stretched over the N output frames — quaternion-slerped on
+a linear ramp, root translation lerped, betas the per-shot median. Every source frame
+is consumed exactly once, so the track's length is the exact sum of the shot lengths
+and the timeline stays sample-aligned with the audio (no cumulative drift for the
+whisper segment mapping; only the window itself is locally time-warped). The leg repair matters: in a close-up the feet are invisible
+(ViTPose ankle confidence collapses, ~0.1 vs ~0.93 in full-body shots), GVHMR
+hallucinates legs, and they float — one 17 s close-up put the lower foot 14.6 cm up,
+failing metrics.py's foot-float gate by itself, and its seam popped the hip 3.3 cm in
+a frame at playback. Any plausible legs are equally correct for invisible limbs, so a
+close-up's leg rotations are replaced with the slerp bridge between the nearest
+full-body shots' boundary stances; upper body and global_orient stay as predicted. The npz
+contract is unchanged, so retarget, refine and every gate downstream run unmodified;
+`data/profiles/<id>/shots.json` records the shot list, fade positions and per-seam
+smoothness (pre-fade pose jump vs post-fade peak angular velocity) for debugging.
+
+A profile may carry a `style` — `"presentation"` (podium or slides in view, e.g. the
+Brunton lectures) or `"stage"` (open-stage talk, e.g. TED) — set at creation through
+POST /api/profiles (an invalid value is rejected with 400) and shown as a badge on the
+profiles panel. The two styles have visibly different gesture distributions and are
+meant to be trained separately.
+
 Clips of about
 30 s with one person in view, camera not moving, work best. Ready profiles join the arena's
 candidate pool as `source: "profile"` and are drawn, weighted and ranked exactly like mocap

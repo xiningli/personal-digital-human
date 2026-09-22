@@ -14,13 +14,21 @@ export const maxDuration = 60;
 
 const MAX_BYTES = 200 * 1024 * 1024;
 const VIDEO_EXT = /\.(mp4|mov|webm)$/i;
+const STYLES = new Set(["presentation", "stage"]);
+
+/** Optional profile style (docs/protocol.md §5); an invalid value is a 400, not a silent drop. */
+function parseStyle(raw: unknown): { style?: MotionProfile["style"] } | { error: string } {
+  if (raw === undefined || raw === null || raw === "") return {};
+  if (typeof raw === "string" && STYLES.has(raw)) return { style: raw as MotionProfile["style"] };
+  return { error: `style must be one of: ${[...STYLES].join(", ")}` };
+}
 
 export async function GET() {
   return Response.json(await getProfiles());
 }
 
 /**
- * Add a profile (docs/protocol.md §5). JSON `{name, url, start?, duration?}` fetches and
+ * Add a profile (docs/protocol.md §5). JSON `{name, url, start?, duration?, style?}` fetches and
  * trims a YouTube clip; multipart with `file` + `name` uses an uploaded video. The profile
  * is created as "processing" and returned at once; extraction runs in the background.
  */
@@ -39,18 +47,23 @@ export async function POST(request: NextRequest) {
     if (file.size > MAX_BYTES) return Response.json({ error: "the clip is over 200 MB" }, { status: 413 });
     if (!VIDEO_EXT.test(file.name) && !file.type.startsWith("video/"))
       return Response.json({ error: "the clip must be mp4, mov or webm" }, { status: 415 });
+    const parsed = parseStyle(form.get("style"));
+    if ("error" in parsed) return Response.json({ error: parsed.error }, { status: 400 });
     profile = {
       id, name, createdAt: new Date().toISOString(),
       sourceType: "upload", sourceRef: file.name, status: "processing",
+      ...(parsed.style ? { style: parsed.style } : {}),
     };
     await fs.mkdir(profileDir(id), { recursive: true });
     await pipeline(Readable.fromWeb(file.stream() as never), createWriteStream(path.join(profileDir(id), "source.mp4")));
   } else {
-    const body = (await request.json().catch(() => null)) as { name?: string; url?: string; start?: number; duration?: number; maxFootFloatCm?: number } | null;
+    const body = (await request.json().catch(() => null)) as { name?: string; url?: string; start?: number; duration?: number; maxFootFloatCm?: number; style?: string } | null;
     const name = body?.name?.trim();
     const url = body?.url?.trim();
     if (!name || !url) return Response.json({ error: "name and url are required" }, { status: 400 });
     if (!/^https?:\/\//.test(url)) return Response.json({ error: "url must be http(s)" }, { status: 400 });
+    const parsed = parseStyle(body?.style);
+    if ("error" in parsed) return Response.json({ error: parsed.error }, { status: 400 });
     opts = {
       start: Number.isFinite(body?.start) ? Number(body?.start) : undefined,
       duration: Number.isFinite(body?.duration) ? Number(body?.duration) : undefined,
@@ -59,6 +72,7 @@ export async function POST(request: NextRequest) {
     profile = {
       id, name, createdAt: new Date().toISOString(),
       sourceType: "youtube", sourceRef: url, status: "processing",
+      ...(parsed.style ? { style: parsed.style } : {}),
     };
   }
 
