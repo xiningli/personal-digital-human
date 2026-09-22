@@ -173,7 +173,9 @@ export class AvatarStage {
     // gesture on each one would stutter, so only an actual state change touches playback.
     if (next === this.motion) return;
     this.motion = next;
-    this.play(next === 'speaking' && this.speaking.length ? this.speaking[this.speakIndex] : this.actions.get(next));
+    // A generated track installed by setTrack outranks the asset's speaking clips; without one
+    // they play in turn, and a state with neither falls back to whatever clip it has.
+    this.play(next === 'speaking' ? this.generated ?? this.speaking[this.speakIndex] ?? this.actions.get(next) : this.actions.get(next));
   }
 
   /**
