@@ -136,6 +136,19 @@ async function extract(profile: MotionProfile, opts: { start?: number; duration?
       void log.write(`segment.py failed (profile still ready): ${e instanceof Error ? e.message : String(e)}\n`);
     }
 
+    // Skeleton data for the eval page's middle column (docs/protocol.md §5): SMPL-X FK
+    // joint positions off the same npz, served next to the track. Additive like segments —
+    // a failure only lands in the log, never fails the profile.
+    try {
+      await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [
+        path.join(MOTION, "export_joints3d.py"),
+        npz,
+        path.join(PUBLIC_MOTION_DIR, `profile-${profile.id}.joints3d.json`),
+      ], MOTION);
+    } catch (e) {
+      void log.write(`export_joints3d.py failed (profile still ready): ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+
     const done = await getProfile(profile.id);
     if (!done) return; // deleted while extracting
     await saveProfile({

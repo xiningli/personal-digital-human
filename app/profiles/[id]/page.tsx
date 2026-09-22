@@ -34,7 +34,7 @@ export default async function ProfileEvalPage({ params }: { params: Promise<{ id
           </dl>
         )}
         <p className="text-xs text-gray-400">
-          原视频与抽取的动作并排同步播放。看视频、听声音，然后给数字人的模仿打分。
+          原视频、抽取的骨架和数字人三栏同步播放。看视频、听声音，然后给数字人的模仿打分。
         </p>
       </header>
       <ProfileEval profile={profile} />

@@ -73,8 +73,8 @@ export interface MotionTrack {
 
 /**
  * One human judgement from the profile eval page (/profiles/[id]): the owner watches the
- * source clip and the extracted track side by side and scores how faithful the imitation is.
- * Appended to data/profile-evals.jsonl, one line per submission.
+ * source clip, the extracted skeleton and the avatar side by side and scores how faithful
+ * the imitation is. Appended to data/profile-evals.jsonl, one line per submission.
  */
 export interface ProfileEval {
   profileId: string;
@@ -87,6 +87,13 @@ export interface ProfileEval {
   /** Does the motion look natural on its own? 1-5. */
   naturalness: number;
   note?: string;
+  /**
+   * Attribution for a low likeness score, asked only when likeness ≤ 3 (docs/protocol.md §5):
+   * "extract" = video vs skeleton already differs (the extraction got it wrong),
+   * "retarget" = the skeleton is right but the avatar doesn't follow it (presentation),
+   * "unsure" = the rater can't tell.
+   */
+  blame?: "extract" | "retarget" | "unsure";
   /**
    * Sentence segment (MotionSegment.i) this score is for; absent on whole-clip evals.
    * Per-segment stats take the latest submission for the segment (re-rating appends a new line).

@@ -57,7 +57,7 @@ export async function appendArenaVote(vote: ArenaVote): Promise<void> {
   await fs.appendFile(VOTES_FILE, JSON.stringify(vote) + "\n", "utf-8");
 }
 
-// Profile evals (lib/types.ts): human faithfulness scores from the side-by-side eval page,
+// Profile evals (lib/types.ts): human faithfulness scores from the triptych eval page,
 // one JSON line per submission.
 
 export async function getProfileEvals(profileId?: string): Promise<ProfileEval[]> {

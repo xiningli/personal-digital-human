@@ -12,6 +12,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const DIMENSIONS = ["likeness", "timing", "naturalness"] as const;
+const BLAMES = ["extract", "retarget", "unsure"] as const;
 
 function validScore(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 5;
@@ -21,6 +22,13 @@ function meanOf(evals: ProfileEval[]) {
   return Object.fromEntries(
     DIMENSIONS.map((d) => [d, evals.length ? evals.reduce((s, e) => s + e[d], 0) / evals.length : null]),
   );
+}
+
+/** Tallies of the optional blame field over a set of submissions (one per submission). */
+function blameCounts(evals: ProfileEval[]): Record<(typeof BLAMES)[number], number> {
+  const counts = { extract: 0, retarget: 0, unsure: 0 };
+  for (const e of evals) if (e.blame) counts[e.blame] += 1;
+  return counts;
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -34,12 +42,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch {
     return Response.json({ error: "invalid JSON" }, { status: 400 });
   }
-  const { likeness, timing, naturalness, note, segment } = body;
+  const { likeness, timing, naturalness, note, blame, segment } = body;
   if (![likeness, timing, naturalness].every(validScore)) {
     return Response.json({ error: "likeness, timing and naturalness must be integers 1-5" }, { status: 400 });
   }
   if (note !== undefined && typeof note !== "string") {
     return Response.json({ error: "note must be a string" }, { status: 400 });
+  }
+  if (blame !== undefined && !(typeof blame === "string" && (BLAMES as readonly string[]).includes(blame))) {
+    return Response.json({ error: `blame must be one of ${BLAMES.join(", ")}` }, { status: 400 });
   }
   if (segment !== undefined) {
     if (typeof segment !== "number" || !Number.isInteger(segment) || segment < 0) {
@@ -58,6 +69,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     ts: new Date().toISOString(),
     likeness: likeness as number, timing: timing as number, naturalness: naturalness as number,
     ...(noteText ? { note: noteText } : {}),
+    ...(blame !== undefined ? { blame: blame as ProfileEval["blame"] } : {}),
     ...(segment !== undefined ? { segment: segment as number } : {}),
   });
   return Response.json({ ok: true });
@@ -81,8 +93,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
       means: latest
         ? { likeness: latest.likeness, timing: latest.timing, naturalness: latest.naturalness }
         : { likeness: null, timing: null, naturalness: null },
+      blames: blameCounts(segEvals),
     };
   });
 
-  return Response.json({ count: whole.length, means: meanOf(whole), perSegment });
+  return Response.json({ count: whole.length, means: meanOf(whole), blames: blameCounts(whole), perSegment });
 }

@@ -144,11 +144,25 @@ profiles page can play a profile's motion with the voice it was extracted from: 
 take looping in sync, or one sentence's frame range against its startS..endS.
 
 Extraction quality is judged by a human, not only by the gates: `/profiles/<id>` is the
-imitation-eval page. It plays the source clip (`GET /api/profiles/<id>/video`, streamed with
-byte-range support, served as-is) and the extracted track on the avatar side by side, on one
-transport — the video's `currentTime` is the single master clock and the avatar's track
-action follows it, hard-corrected when the drift exceeds 80 ms, with an optional 0.5x mode
-for frame-by-frame checks. The default flow is **per-segment** (逐段评测): the page picks the
+imitation-eval page. It plays three columns on one transport: the source clip
+(`GET /api/profiles/<id>/video`, streamed with byte-range support, served as-is) on the
+left, the extracted SMPL-X motion as a bare stick-figure skeleton in the middle, and the
+retargeted track on the avatar on the right. The video's `currentTime` is the single
+master clock: the avatar's track action follows it (hard-corrected when the drift exceeds
+80 ms) and the skeleton redraws the frame at `floor(currentTime * fps)` on the same rAF,
+with an optional 0.5x mode for frame-by-frame checks. The middle column splits "where is
+it unlike" into the pipeline's two engineering stages: video↔skeleton judges the
+extraction (GVHMR), skeleton↔avatar judges the retarget and presentation.
+
+The skeleton's data comes from `motion/export_joints3d.py` (`<motion.npz> <out.json>`,
+pure CPU), which FKs the npz's SMPL-X parameters to 55 joint positions per frame and
+writes `public/motion/profile-<id>.joints3d.json` (`{fps, frames, names, joints}`, flat
+xyz, y-up; the npz's world frame is already yaw-fixed to the stage and the floor is
+normalized so the lowest toe sits at y=0, matching how the player grounds the avatar).
+The pipeline runs it after segment.py, and like segmentation it is additive: a failure
+lands in run.log, never fails the profile. The view draws the 22-joint body tree plus a
+rough fan from each wrist to its finger bases — GVHMR extracts no finger motion, so the
+fingers only mark where the hand is. The default flow is **per-segment** (逐段评测): the page picks the
 first unrated sentence segment, loops it on both sides until the rater acts, and shows the
 progress (已评 n/N) on a bar plus per-chip ticks with the latest score. A submission
 (`POST /api/profiles/<id>/eval` with `segment` = the segment's `i`, bounds-checked against
@@ -157,9 +171,15 @@ to that segment, so re-rating a rated one just appends a new line. The alternati
 (整段对比) is the original whole-clip loop whose submissions carry no segment. Both score
 three 1-5 dimensions — likeness (像不像本人), timing (节奏同步), naturalness (自然度) — with an
 optional note; each submission appends one line to `data/profile-evals.jsonl` (gitignored,
-like the votes). `GET` keeps the two kinds apart: the top-level `count`/`means` cover
-whole-clip evals, while `perSegment[i]` carries the submission count and the means of the
-**latest** submission for segment `i` (re-ratings supersede, they do not average).
+like the votes). When likeness is ≤ 3 the panel additionally asks for a `blame`
+attribution — "extract" (抽错了: video vs skeleton already differs), "retarget"
+(数字人没跟上: the skeleton is right but the avatar doesn't follow it), or "unsure"
+(说不好, the default) — and the submission carries it; likeness > 3 sends no blame. The
+API rejects any value outside the enum with 400. `GET` keeps the two kinds apart: the
+top-level `count`/`means` cover whole-clip evals, while `perSegment[i]` carries the
+submission count and the means of the **latest** submission for segment `i` (re-ratings
+supersede, they do not average). Blame tallies ride along as `blames: {extract, retarget,
+unsure}` — counted per submission, both top-level (whole-clip evals) and per segment.
 
 The limitations are honest ones, inherited from the pipeline. GVHMR predicts only the 22
 body joints: the fingers, jaw and eyes stay in the bind pose, so a profile's hands are

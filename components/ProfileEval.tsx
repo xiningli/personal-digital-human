@@ -1,10 +1,14 @@
 "use client";
 
-// Side-by-side imitation eval (docs/protocol.md §5): the profile's source clip on the left,
-// the extracted track on the avatar on the right, one transport driving both. The video is
-// the single master clock; the avatar's track action follows it (hard-corrected when the
-// drift exceeds 80 ms). Sound comes only from the video, and its loudness drives the mouth —
-// the same lip-sync the arena uses.
+// Triptych imitation eval (docs/protocol.md §5): the profile's source clip on the left, the
+// extracted SMPL-X motion as a bare skeleton in the middle, the retargeted track on the
+// avatar on the right, one transport driving all three. The video is the single master
+// clock; the avatar's track action follows it (hard-corrected when the drift exceeds
+// 80 ms) and the skeleton redraws the frame at floor(currentTime * fps). Sound comes only
+// from the video, and its loudness drives the mouth — the same lip-sync the arena uses.
+// The middle column splits "哪里不像" into two engineering stages: video↔skeleton judges
+// the extraction (blame: "extract"), skeleton↔avatar judges the presentation
+// (blame: "retarget"); the rating panel asks for that attribution when likeness is ≤ 3.
 //
 // Two modes. The default "逐段评测" walks the rater through the sentence segments one by
 // one: the current segment loops on both sides until the rater scores it, a submission
@@ -14,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AvatarStage, speechFace, type AvatarState, type MotionTrack } from "@/player";
+import SkeletonView, { type SkeletonViewHandle } from "./SkeletonView";
 import { useLoudness } from "./useLoudness";
 import type { MotionProfile, MotionSegment } from "@/lib/types";
 
@@ -27,13 +32,17 @@ function timecode(s: number): string {
   return `${m}:${sec}`;
 }
 
+type Blame = "extract" | "retarget" | "unsure";
+type BlameCounts = Record<Blame, number>;
 type DimMeans = { likeness: number | null; timing: number | null; naturalness: number | null };
 type EvalStats = {
   /** Whole-clip evals (no segment): count and means. */
   count: number;
   means: DimMeans;
+  /** Blame tallies over the whole-clip evals (present when the server serves them). */
+  blames?: BlameCounts;
   /** Indexed by segment i: submission count, and the latest submission's scores. */
-  perSegment: { count: number; means: DimMeans }[];
+  perSegment: { count: number; means: DimMeans; blames?: BlameCounts }[];
 };
 
 /** One row of five clickable stars for a rating dimension. */
@@ -69,6 +78,7 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<AvatarStage | null>(null);
+  const skeletonRef = useRef<SkeletonViewHandle>(null);
   const trackDurRef = useRef(0);
   const driftRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
@@ -95,6 +105,7 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
   const [likeness, setLikeness] = useState(0);
   const [timing, setTiming] = useState(0);
   const [naturalness, setNaturalness] = useState(0);
+  const [blame, setBlame] = useState<Blame>("unsure");
   const [note, setNote] = useState("");
   const [stats, setStats] = useState<EvalStats | null>(null);
   const [busy, setBusy] = useState(false);
@@ -191,6 +202,7 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
       setLikeness(0); setTiming(0); setNaturalness(0);
     }
     setNote("");
+    setBlame("unsure");
     const video = videoRef.current;
     if (video?.paused) void video.play().catch(() => {});
   }, [seek]);
@@ -216,7 +228,10 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const video = videoRef.current, stage = stageRef.current, trackDur = trackDurRef.current;
-      if (!video || !stage) return;
+      if (!video) return;
+      // The skeleton column has no clock of its own; it redraws off the master clock.
+      skeletonRef.current?.setTime(video.currentTime);
+      if (!stage) return;
       if (!video.paused && trackDur > 0) {
         const loop = segLoopRef.current;
         if (loop && (video.currentTime >= loop.end || video.currentTime < loop.start - 0.5)) {
@@ -277,6 +292,7 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
     w.__eval = {
       get video() { return videoRef.current; },
       get stage() { return stageRef.current; },
+      get skeleton() { return skeletonRef.current; },
       get drift() { return driftRef.current; },
       get currentSegment() { return segLoopRef.current; },
     };
@@ -319,17 +335,20 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
   const submit = async () => {
     setBusy(true); setError(null);
     const seg = mode === "segments" ? current : null;
+    // Blame is only collected (and only meaningful) when likeness says "not alike" (≤ 3).
+    const withBlame = likeness >= 1 && likeness <= 3;
     try {
       const r = await fetch(`/api/profiles/${profile.id}/eval`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           likeness, timing, naturalness, note: note.trim() || undefined,
+          ...(withBlame ? { blame } : {}),
           ...(seg !== null ? { segment: seg } : {}),
         }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
-      setLikeness(0); setTiming(0); setNaturalness(0); setNote("");
+      setLikeness(0); setTiming(0); setNaturalness(0); setBlame("unsure"); setNote("");
       loadStats();
       if (seg !== null && segments) {
         // Advance to the first unrated segment (counting this one as just rated);
@@ -378,11 +397,18 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
         )}
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-3">
         <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-black h-[40vh] lg:h-[60vh]">
           <video ref={videoRef} src={`/api/profiles/${profile.id}/video`} loop playsInline
             className="w-full h-full object-contain" />
           <span className="absolute top-2 left-2 text-xs text-white/80 bg-black/50 rounded px-2 py-0.5">原视频</span>
+        </div>
+        <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-[#0d1117] h-[40vh] lg:h-[60vh]">
+          <SkeletonView ref={skeletonRef} src={`/motion/profile-${profile.id}.joints3d.json`} />
+          <span className="absolute top-2 left-2 text-xs text-white/80 bg-black/50 rounded px-2 py-0.5">骨架（抽取结果）</span>
+          <span className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[11px] text-white/60 bg-black/50 rounded px-2 py-0.5 whitespace-nowrap">
+            视频↔骨架 = 抽得对不对；骨架↔数字人 = 跟没跟上
+          </span>
         </div>
         <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-[#0d1117] h-[40vh] lg:h-[60vh]">
           <canvas ref={canvasRef} className="w-full h-full block" />
@@ -473,6 +499,22 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
           <StarRow label="节奏同步" hint="timing" value={timing} onChange={setTiming} />
           <StarRow label="自然度" hint="naturalness" value={naturalness} onChange={setNaturalness} />
         </div>
+        {likeness >= 1 && likeness <= 3 && (
+          <fieldset className="flex items-center gap-4 flex-wrap border border-amber-200 bg-amber-50 rounded-lg px-3 py-2">
+            <legend className="text-xs text-gray-500 px-1">不像主要出在哪？</legend>
+            {([
+              ["extract", "抽错了（视频↔骨架就不像）"],
+              ["retarget", "数字人没跟上（骨架对，呈现不像）"],
+              ["unsure", "说不好"],
+            ] as [Blame, string][]).map(([value, label]) => (
+              <label key={value} className="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer">
+                <input type="radio" name="blame" checked={blame === value} onChange={() => setBlame(value)}
+                  className="accent-gray-900" />
+                {label}
+              </label>
+            ))}
+          </fieldset>
+        )}
         <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
           placeholder="备注（可选）：哪里像、哪里不像…"
           className="w-full border rounded-lg px-3 py-2 text-sm" />
