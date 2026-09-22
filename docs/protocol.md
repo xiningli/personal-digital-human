@@ -148,11 +148,18 @@ imitation-eval page. It plays the source clip (`GET /api/profiles/<id>/video`, s
 byte-range support, served as-is) and the extracted track on the avatar side by side, on one
 transport — the video's `currentTime` is the single master clock and the avatar's track
 action follows it, hard-corrected when the drift exceeds 80 ms, with an optional 0.5x mode
-for frame-by-frame checks. Sentence chips seek both sides to a segment's start. The owner
-scores three 1-5 dimensions — likeness (像不像本人), timing (节奏同步), naturalness (自然度) —
-with an optional note; `POST /api/profiles/<id>/eval` appends one line per submission to
-`data/profile-evals.jsonl` (gitignored, like the votes) and `GET` returns the running count
-and per-dimension means.
+for frame-by-frame checks. The default flow is **per-segment** (逐段评测): the page picks the
+first unrated sentence segment, loops it on both sides until the rater acts, and shows the
+progress (已评 n/N) on a bar plus per-chip ticks with the latest score. A submission
+(`POST /api/profiles/<id>/eval` with `segment` = the segment's `i`, bounds-checked against
+the public segments JSON) auto-advances to the next unrated segment; clicking any chip jumps
+to that segment, so re-rating a rated one just appends a new line. The alternative tab
+(整段对比) is the original whole-clip loop whose submissions carry no segment. Both score
+three 1-5 dimensions — likeness (像不像本人), timing (节奏同步), naturalness (自然度) — with an
+optional note; each submission appends one line to `data/profile-evals.jsonl` (gitignored,
+like the votes). `GET` keeps the two kinds apart: the top-level `count`/`means` cover
+whole-clip evals, while `perSegment[i]` carries the submission count and the means of the
+**latest** submission for segment `i` (re-ratings supersede, they do not average).
 
 The limitations are honest ones, inherited from the pipeline. GVHMR predicts only the 22
 body joints: the fingers, jaw and eyes stay in the bind pose, so a profile's hands are

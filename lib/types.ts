@@ -87,6 +87,11 @@ export interface ProfileEval {
   /** Does the motion look natural on its own? 1-5. */
   naturalness: number;
   note?: string;
+  /**
+   * Sentence segment (MotionSegment.i) this score is for; absent on whole-clip evals.
+   * Per-segment stats take the latest submission for the segment (re-rating appends a new line).
+   */
+  segment?: number;
 }
 
 export interface ArenaCandidate {

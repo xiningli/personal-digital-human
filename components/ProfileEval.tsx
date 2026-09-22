@@ -4,8 +4,13 @@
 // the extracted track on the avatar on the right, one transport driving both. The video is
 // the single master clock; the avatar's track action follows it (hard-corrected when the
 // drift exceeds 80 ms). Sound comes only from the video, and its loudness drives the mouth —
-// the same lip-sync the arena uses. Below: sentence chips that seek both sides, and the
-// three-dimension star rating whose submissions go to /api/profiles/[id]/eval.
+// the same lip-sync the arena uses.
+//
+// Two modes. The default "逐段评测" walks the rater through the sentence segments one by
+// one: the current segment loops on both sides until the rater scores it, a submission
+// (POST with `segment`) auto-advances to the first unrated segment, and chips show which
+// segments are done (✓ plus the latest score). "整段对比" is the original whole-clip loop
+// whose submissions carry no segment. GET stats keep the two apart.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AvatarStage, speechFace, type AvatarState, type MotionTrack } from "@/player";
@@ -22,7 +27,14 @@ function timecode(s: number): string {
   return `${m}:${sec}`;
 }
 
-type EvalStats = { count: number; means: { likeness: number | null; timing: number | null; naturalness: number | null } };
+type DimMeans = { likeness: number | null; timing: number | null; naturalness: number | null };
+type EvalStats = {
+  /** Whole-clip evals (no segment): count and means. */
+  count: number;
+  means: DimMeans;
+  /** Indexed by segment i: submission count, and the latest submission's scores. */
+  perSegment: { count: number; means: DimMeans }[];
+};
 
 /** One row of five clickable stars for a rating dimension. */
 function StarRow({ label, hint, value, onChange }: {
@@ -60,6 +72,12 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
   const trackDurRef = useRef(0);
   const driftRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
+  /** The [startS, endS] window the per-segment mode loops inside; null in whole-clip mode. */
+  const segLoopRef = useRef<{ start: number; end: number } | null>(null);
+  const segmentsRef = useRef<MotionSegment[] | null>(null);
+  const statsRef = useRef<EvalStats | null>(null);
+  const currentRef = useRef<number | null>(null);
+  const modeRef = useRef<"segments" | "whole">("segments");
 
   const [status, setStatus] = useState<AvatarState>("loading");
   const [playing, setPlaying] = useState(false);
@@ -69,6 +87,10 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
   const [segments, setSegments] = useState<MotionSegment[] | null>(null);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const level = useLoudness(videoEl);
+
+  const [mode, setMode] = useState<"segments" | "whole">("segments");
+  /** Segment being evaluated in per-segment mode; null before auto-start / after finishing. */
+  const [current, setCurrent] = useState<number | null>(null);
 
   const [likeness, setLikeness] = useState(0);
   const [timing, setTiming] = useState(0);
@@ -142,8 +164,52 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
     stageRef.current?.setTrackRate(rate);
   }, [rate]);
 
+  const seek = useCallback((t: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = t;
+    stageRef.current?.seekTrack(t);
+    lastTimeRef.current = t;
+    setTime(t);
+  }, []);
+
+  // Jump to segment i for per-segment eval: seek both sides to its start, loop it, play.
+  // A rated segment pre-fills the stars with its latest scores so re-rating starts from them.
+  const goToSegment = useCallback((i: number) => {
+    const seg = segmentsRef.current?.find((s) => s.i === i);
+    if (!seg) return;
+    currentRef.current = i;
+    setCurrent(i);
+    segLoopRef.current = { start: seg.startS, end: seg.endS };
+    seek(seg.startS);
+    const latest = statsRef.current?.perSegment[i];
+    if (latest && latest.count > 0) {
+      setLikeness(Math.round(latest.means.likeness ?? 0));
+      setTiming(Math.round(latest.means.timing ?? 0));
+      setNaturalness(Math.round(latest.means.naturalness ?? 0));
+    } else {
+      setLikeness(0); setTiming(0); setNaturalness(0);
+    }
+    setNote("");
+    const video = videoRef.current;
+    if (video?.paused) void video.play().catch(() => {});
+  }, [seek]);
+
+  // Per-segment mode auto-starts on the first unrated segment once segments and stats are in.
+  // Runs from the fetch callbacks below (not an effect) so it never cascades renders.
+  const maybeAutoStart = useCallback(() => {
+    if (modeRef.current !== "segments" || currentRef.current !== null) return;
+    const segs = segmentsRef.current, st = statsRef.current;
+    if (!segs || !st) return;
+    const rated = new Set(st.perSegment.flatMap((s, i) => (s.count > 0 ? [i] : [])));
+    const next = segs.find((s) => !rated.has(s.i));
+    if (next) goToSegment(next.i);
+  }, [goToSegment]);
+
   // The sync loop: every frame the avatar's track clock follows the video; a drift over
-  // MAX_DRIFT (loop-aware) is hard-corrected. Also the mouth and the smooth time display.
+  // MAX_DRIFT (loop-aware) is hard-corrected. In per-segment mode the video wraps back to
+  // the segment start when it runs past the end, so the segment loops until the rater acts.
+  // Also the mouth and the smooth time display.
   useEffect(() => {
     const start = performance.now();
     let raf = 0;
@@ -152,6 +218,12 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
       const video = videoRef.current, stage = stageRef.current, trackDur = trackDurRef.current;
       if (!video || !stage) return;
       if (!video.paused && trackDur > 0) {
+        const loop = segLoopRef.current;
+        if (loop && (video.currentTime >= loop.end || video.currentTime < loop.start - 0.5)) {
+          video.currentTime = loop.start;
+          stage.seekTrack(loop.start);
+          lastTimeRef.current = loop.start;
+        }
         const target = video.currentTime % trackDur;
         const at = stage.trackTime;
         if (at != null) {
@@ -176,17 +248,25 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
     if (!profile.hasSegments) return;
     fetch(`/motion/profile-${profile.id}.segments.json`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d: { segments: MotionSegment[] }) => setSegments(d.segments))
+      .then((d: { segments: MotionSegment[] }) => {
+        segmentsRef.current = d.segments;
+        setSegments(d.segments);
+        maybeAutoStart();
+      })
       .catch(() => setSegments(null));
-  }, [profile.id, profile.hasSegments]);
+  }, [profile.id, profile.hasSegments, maybeAutoStart]);
 
-  // Existing eval stats.
+  // Existing eval stats (whole-clip count/means plus perSegment).
   const loadStats = useCallback(() => {
     fetch(`/api/profiles/${profile.id}/eval`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then(setStats)
+      .then((d: EvalStats) => {
+        statsRef.current = d;
+        setStats(d);
+        maybeAutoStart();
+      })
       .catch(() => setStats(null));
-  }, [profile.id]);
+  }, [profile.id, maybeAutoStart]);
   useEffect(loadStats, [loadStats]);
 
   // A measuring handle, like the arena's __arena / the preview's __profiles, so sync can be
@@ -198,17 +278,29 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
       get video() { return videoRef.current; },
       get stage() { return stageRef.current; },
       get drift() { return driftRef.current; },
+      get currentSegment() { return segLoopRef.current; },
     };
   }, []);
 
-  const seek = useCallback((t: number) => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.currentTime = t;
-    stageRef.current?.seekTrack(t);
-    lastTimeRef.current = t;
-    setTime(t);
-  }, []);
+  const total = segments?.length ?? 0;
+  const perSegment = stats?.perSegment ?? [];
+  const ratedCount = perSegment.filter((s) => s.count > 0).length;
+  const allDone = total > 0 && ratedCount >= total;
+
+  const switchMode = (m: "segments" | "whole") => {
+    modeRef.current = m;
+    setMode(m);
+    if (m === "whole") {
+      segLoopRef.current = null;
+    } else if (current === null) {
+      const st = statsRef.current;
+      const rated = new Set((st?.perSegment ?? []).flatMap((s, i) => (s.count > 0 ? [i] : [])));
+      const next = segments?.find((s) => !rated.has(s.i))?.i ?? segments?.[0]?.i;
+      if (next != null) goToSegment(next);
+    } else {
+      goToSegment(current);
+    }
+  };
 
   const toggle = () => {
     const video = videoRef.current;
@@ -218,6 +310,7 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
   };
 
   const pickSegment = (s: MotionSegment) => {
+    if (mode === "segments") { goToSegment(s.i); return; }
     seek(s.startS);
     const video = videoRef.current;
     if (video?.paused) void video.play().catch(() => {});
@@ -225,31 +318,73 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
 
   const submit = async () => {
     setBusy(true); setError(null);
+    const seg = mode === "segments" ? current : null;
     try {
       const r = await fetch(`/api/profiles/${profile.id}/eval`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ likeness, timing, naturalness, note: note.trim() || undefined }),
+        body: JSON.stringify({
+          likeness, timing, naturalness, note: note.trim() || undefined,
+          ...(seg !== null ? { segment: seg } : {}),
+        }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
       setLikeness(0); setTiming(0); setNaturalness(0); setNote("");
       loadStats();
+      if (seg !== null && segments) {
+        // Advance to the first unrated segment (counting this one as just rated);
+        // when none is left the flow is done and the completion line shows.
+        const rated = new Set(perSegment.flatMap((s, i) => (s.count > 0 ? [i] : [])));
+        rated.add(seg);
+        const next = segments.find((s) => !rated.has(s.i));
+        if (next) goToSegment(next.i);
+        else { currentRef.current = null; setCurrent(null); }
+      }
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
 
-  const activeSegment = segments?.find((s) => time >= s.startS && time < s.endS)?.i ?? null;
+  const currentSeg = segments?.find((s) => s.i === current) ?? null;
+  const activeSegment = mode === "segments"
+    ? current
+    : segments?.find((s) => time >= s.startS && time < s.endS)?.i ?? null;
   const fmt = (v: number | null) => (v == null ? "—" : v.toFixed(1));
+  const segScore = (i: number): number | null => {
+    const m = perSegment[i]?.means;
+    if (!m || perSegment[i].count === 0) return null;
+    return ((m.likeness ?? 0) + (m.timing ?? 0) + (m.naturalness ?? 0)) / 3;
+  };
+
+  // In per-segment mode the slider spans the current segment only; otherwise the whole clip.
+  const sliderMin = mode === "segments" && currentSeg ? currentSeg.startS : 0;
+  const sliderMax = mode === "segments" && currentSeg ? currentSeg.endS : duration || 0;
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex rounded-lg bg-gray-100 p-1 text-sm">
+          {([["segments", "逐段评测"], ["whole", "整段对比"]] as const).map(([m, label]) => (
+            <button key={m} onClick={() => switchMode(m)}
+              className={`px-3 py-1 rounded-md transition-colors ${mode === m ? "bg-white shadow-sm font-medium text-gray-900" : "text-gray-500 hover:text-gray-700"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {mode === "segments" && total > 0 && (
+          <span className="text-xs text-gray-500">
+            {currentSeg ? `第 ${currentSeg.i + 1}/${total} 段` : `共 ${total} 段`} · 已评 {ratedCount}
+            {allDone && <span className="ml-2 text-emerald-600">已评完 {ratedCount}/{total}，可重评任意段</span>}
+          </span>
+        )}
+      </div>
+
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-black h-[40vh] lg:h-[68vh]">
+        <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-black h-[40vh] lg:h-[60vh]">
           <video ref={videoRef} src={`/api/profiles/${profile.id}/video`} loop playsInline
             className="w-full h-full object-contain" />
           <span className="absolute top-2 left-2 text-xs text-white/80 bg-black/50 rounded px-2 py-0.5">原视频</span>
         </div>
-        <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-[#0d1117] h-[40vh] lg:h-[68vh]">
+        <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-[#0d1117] h-[40vh] lg:h-[60vh]">
           <canvas ref={canvasRef} className="w-full h-full block" />
           <span className="absolute top-2 left-2 text-xs text-white/80 bg-black/50 rounded px-2 py-0.5">数字人</span>
           {status !== "ready" && (
@@ -266,39 +401,73 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
           disabled={status !== "ready"}>
           {playing ? "⏸" : "▶"}
         </button>
-        <input type="range" min={0} max={duration || 0} step={0.01} value={Math.min(time, duration || 0)}
+        <input type="range" min={sliderMin} max={sliderMax} step={0.01}
+          value={Math.min(Math.max(time, sliderMin), sliderMax)}
           onChange={(e) => seek(Number(e.target.value))}
           className="flex-1 accent-gray-900" aria-label="Seek" />
-        <span className="text-xs text-gray-500 tabular-nums shrink-0">{timecode(time)} / {timecode(duration)}</span>
+        <span className="text-xs text-gray-500 tabular-nums shrink-0">
+          {timecode(Math.max(time - sliderMin, 0))} / {timecode(Math.max(sliderMax - sliderMin, 0))}
+        </span>
         <button onClick={() => setRate(rate === 1 ? 0.5 : 1)} title="Playback rate (0.5x for frame-by-frame checks)"
           className={`text-xs rounded-lg border px-2 py-1 shrink-0 tabular-nums ${rate === 1 ? "border-gray-200 text-gray-500" : "border-amber-300 bg-amber-50 text-amber-700"}`}>
           {rate === 1 ? "1x" : "0.5x"}
         </button>
       </div>
 
+      {segments && mode === "segments" && (
+        <div className="flex items-center gap-2">
+          <div className="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden" role="progressbar"
+            aria-valuenow={ratedCount} aria-valuemin={0} aria-valuemax={total}>
+            <div className="h-full bg-emerald-500 rounded-full transition-all"
+              style={{ width: `${total ? (ratedCount / total) * 100 : 0}%` }} />
+          </div>
+          <span className="text-xs text-gray-500 tabular-nums shrink-0">{ratedCount}/{total}</span>
+        </div>
+      )}
+
       {segments && (
         <div className="flex gap-2 overflow-x-auto pb-1">
-          {segments.map((s) => (
-            <button key={s.i} onClick={() => pickSegment(s)} title={s.text}
-              className={`shrink-0 rounded-full border px-3 py-1 text-xs tabular-nums whitespace-nowrap transition-colors ${
-                activeSegment === s.i
-                  ? "border-amber-300 bg-amber-100 text-gray-900 font-medium"
-                  : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"}`}>
-              #{s.i + 1} {timecode(s.startS)}–{timecode(s.endS)}
-            </button>
-          ))}
+          {segments.map((s) => {
+            const score = segScore(s.i);
+            return (
+              <button key={s.i} onClick={() => pickSegment(s)} title={s.text}
+                className={`shrink-0 rounded-full border px-3 py-1 text-xs tabular-nums whitespace-nowrap transition-colors ${
+                  activeSegment === s.i
+                    ? "border-amber-300 bg-amber-100 text-gray-900 font-medium"
+                    : score !== null
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"}`}>
+                #{s.i + 1}{score !== null ? ` ✓${score.toFixed(1)}` : ` ${timecode(s.startS)}–${timecode(s.endS)}`}
+              </button>
+            );
+          })}
         </div>
       )}
 
       <section className="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
         <div className="flex items-baseline justify-between flex-wrap gap-2">
-          <h2 className="text-sm font-semibold text-gray-700">像不像？ Rate the imitation</h2>
-          {stats && (
+          <h2 className="text-sm font-semibold text-gray-700">
+            像不像？ Rate the imitation
+            {mode === "segments" && currentSeg && (
+              <span className="ml-2 font-normal text-gray-500">第 {currentSeg.i + 1} 段</span>
+            )}
+          </h2>
+          {stats && mode === "whole" && (
             <p className="text-xs text-gray-500">
-              共 {stats.count} 次评测 · 均分 {fmt(stats.means.likeness)} / {fmt(stats.means.timing)} / {fmt(stats.means.naturalness)}
+              整段共 {stats.count} 次评测 · 均分 {fmt(stats.means.likeness)} / {fmt(stats.means.timing)} / {fmt(stats.means.naturalness)}
+            </p>
+          )}
+          {stats && mode === "segments" && currentSeg && perSegment[currentSeg.i]?.count > 0 && (
+            <p className="text-xs text-gray-500">
+              本段已评 {perSegment[currentSeg.i].count} 次 · 最新 {fmt(perSegment[currentSeg.i].means.likeness)} / {fmt(perSegment[currentSeg.i].means.timing)} / {fmt(perSegment[currentSeg.i].means.naturalness)}
             </p>
           )}
         </div>
+        {mode === "segments" && currentSeg && (
+          <blockquote className="text-sm text-gray-600 border-l-2 border-amber-300 pl-3">
+            “{currentSeg.text}” <span className="text-xs text-gray-400">{timecode(currentSeg.startS)}–{timecode(currentSeg.endS)}</span>
+          </blockquote>
+        )}
         <div className="space-y-2">
           <StarRow label="像不像本人" hint="likeness" value={likeness} onChange={setLikeness} />
           <StarRow label="节奏同步" hint="timing" value={timing} onChange={setTiming} />
@@ -308,9 +477,9 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
           placeholder="备注（可选）：哪里像、哪里不像…"
           className="w-full border rounded-lg px-3 py-2 text-sm" />
         <div className="flex items-center gap-3">
-          <button onClick={submit} disabled={busy || !likeness || !timing || !naturalness}
+          <button onClick={submit} disabled={busy || !likeness || !timing || !naturalness || (mode === "segments" && current === null)}
             className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm disabled:opacity-50">
-            {busy ? "submitting…" : "提交评分"}
+            {busy ? "submitting…" : mode === "segments" && !allDone ? "提交，下一段 →" : "提交评分"}
           </button>
           {error && <span className="text-sm text-red-600">{error}</span>}
         </div>

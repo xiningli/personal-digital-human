@@ -1,8 +1,12 @@
 // Human eval scores for a profile's imitation quality (the eval page at /profiles/[id]).
-// POST appends one submission to data/profile-evals.jsonl; GET returns the running count
-// and per-dimension means for this profile.
+// POST appends one submission to data/profile-evals.jsonl; a submission may carry `segment`
+// (a MotionSegment.i) for the per-segment eval flow, or none for a whole-clip eval. GET
+// returns the whole-clip count/means (evals without a segment) plus perSegment stats —
+// for each segment the submission count and the means of its LATEST submission (re-rating
+// appends a new line; the newest one wins, per docs/protocol.md §5).
 
-import { appendProfileEval, getProfile, getProfileEvals } from "@/lib/storage";
+import { appendProfileEval, getProfile, getProfileEvals, getProfileSegmentCount } from "@/lib/storage";
+import type { ProfileEval } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -11,6 +15,12 @@ const DIMENSIONS = ["likeness", "timing", "naturalness"] as const;
 
 function validScore(v: unknown): v is number {
   return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 5;
+}
+
+function meanOf(evals: ProfileEval[]) {
+  return Object.fromEntries(
+    DIMENSIONS.map((d) => [d, evals.length ? evals.reduce((s, e) => s + e[d], 0) / evals.length : null]),
+  );
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -24,12 +34,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch {
     return Response.json({ error: "invalid JSON" }, { status: 400 });
   }
-  const { likeness, timing, naturalness, note } = body;
+  const { likeness, timing, naturalness, note, segment } = body;
   if (![likeness, timing, naturalness].every(validScore)) {
     return Response.json({ error: "likeness, timing and naturalness must be integers 1-5" }, { status: 400 });
   }
   if (note !== undefined && typeof note !== "string") {
     return Response.json({ error: "note must be a string" }, { status: 400 });
+  }
+  if (segment !== undefined) {
+    if (typeof segment !== "number" || !Number.isInteger(segment) || segment < 0) {
+      return Response.json({ error: "segment must be a non-negative integer" }, { status: 400 });
+    }
+    const count = await getProfileSegmentCount(id);
+    if (count == null) return Response.json({ error: "profile has no segments" }, { status: 400 });
+    if (segment >= count) {
+      return Response.json({ error: `segment must be < ${count}` }, { status: 400 });
+    }
   }
 
   const noteText = typeof note === "string" && note.trim() ? note.trim() : undefined;
@@ -38,6 +58,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     ts: new Date().toISOString(),
     likeness: likeness as number, timing: timing as number, naturalness: naturalness as number,
     ...(noteText ? { note: noteText } : {}),
+    ...(segment !== undefined ? { segment: segment as number } : {}),
   });
   return Response.json({ ok: true });
 }
@@ -47,9 +68,21 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const profile = await getProfile(id);
   if (!profile) return Response.json({ error: "not found" }, { status: 404 });
 
-  const evals = (await getProfileEvals()).filter((e) => e.profileId === id);
-  const means = Object.fromEntries(
-    DIMENSIONS.map((d) => [d, evals.length ? evals.reduce((s, e) => s + e[d], 0) / evals.length : null]),
-  );
-  return Response.json({ count: evals.length, means });
+  const evals = await getProfileEvals(id);
+  const whole = evals.filter((e) => e.segment === undefined);
+  const maxSegment = evals.reduce((m, e) => (e.segment != null ? Math.max(m, e.segment + 1) : m), 0);
+  const segmentCount = (await getProfileSegmentCount(id)) ?? maxSegment;
+
+  const perSegment = Array.from({ length: segmentCount }, (_, i) => {
+    const segEvals = evals.filter((e) => e.segment === i);
+    const latest = segEvals[segEvals.length - 1];
+    return {
+      count: segEvals.length,
+      means: latest
+        ? { likeness: latest.likeness, timing: latest.timing, naturalness: latest.naturalness }
+        : { likeness: null, timing: null, naturalness: null },
+    };
+  });
+
+  return Response.json({ count: whole.length, means: meanOf(whole), perSegment });
 }

@@ -60,12 +60,22 @@ export async function appendArenaVote(vote: ArenaVote): Promise<void> {
 // Profile evals (lib/types.ts): human faithfulness scores from the side-by-side eval page,
 // one JSON line per submission.
 
-export async function getProfileEvals(): Promise<ProfileEval[]> {
+export async function getProfileEvals(profileId?: string): Promise<ProfileEval[]> {
   await ensureDirs();
+  let evals: ProfileEval[] = [];
   try {
     const text = await fs.readFile(EVALS_FILE, "utf-8");
-    return text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as ProfileEval);
+    evals = text.split("\n").filter((l) => l.trim()).map((l) => JSON.parse(l) as ProfileEval);
   } catch { return []; }
+  return profileId ? evals.filter((e) => e.profileId === profileId) : evals;
+}
+
+/** Number of sentence segments in the served public/profile-<id>.segments.json; null when absent. */
+export async function getProfileSegmentCount(id: string): Promise<number | null> {
+  const d = await readJson<{ segments?: unknown[] } | null>(
+    path.join(PUBLIC_MOTION_DIR, `profile-${id}.segments.json`), null,
+  );
+  return Array.isArray(d?.segments) ? d.segments.length : null;
 }
 
 export async function appendProfileEval(ev: ProfileEval): Promise<void> {
