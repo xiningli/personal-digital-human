@@ -42,12 +42,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch {
     return Response.json({ error: "invalid JSON" }, { status: 400 });
   }
-  const { likeness, timing, naturalness, note, blame, segment } = body;
+  const { likeness, timing, naturalness, likeNote, dislikeNote, blame, segment } = body;
   if (![likeness, timing, naturalness].every(validScore)) {
     return Response.json({ error: "likeness, timing and naturalness must be integers 1-5" }, { status: 400 });
   }
-  if (note !== undefined && typeof note !== "string") {
-    return Response.json({ error: "note must be a string" }, { status: 400 });
+  for (const [name, value] of [["likeNote", likeNote], ["dislikeNote", dislikeNote]] as const) {
+    if (value !== undefined && typeof value !== "string") {
+      return Response.json({ error: `${name} must be a string` }, { status: 400 });
+    }
   }
   if (blame !== undefined && !(typeof blame === "string" && (BLAMES as readonly string[]).includes(blame))) {
     return Response.json({ error: `blame must be one of ${BLAMES.join(", ")}` }, { status: 400 });
@@ -63,12 +65,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
   }
 
-  const noteText = typeof note === "string" && note.trim() ? note.trim() : undefined;
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
   await appendProfileEval({
     profileId: id,
     ts: new Date().toISOString(),
     likeness: likeness as number, timing: timing as number, naturalness: naturalness as number,
-    ...(noteText ? { note: noteText } : {}),
+    ...(text(likeNote) ? { likeNote: text(likeNote) } : {}),
+    ...(text(dislikeNote) ? { dislikeNote: text(dislikeNote) } : {}),
     ...(blame !== undefined ? { blame: blame as ProfileEval["blame"] } : {}),
     ...(segment !== undefined ? { segment: segment as number } : {}),
   });

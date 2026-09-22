@@ -169,8 +169,10 @@ progress (已评 n/N) on a bar plus per-chip ticks with the latest score. A subm
 the public segments JSON) auto-advances to the next unrated segment; clicking any chip jumps
 to that segment, so re-rating a rated one just appends a new line. The alternative tab
 (整段对比) is the original whole-clip loop whose submissions carry no segment. Both score
-three 1-5 dimensions — likeness (像不像本人), timing (节奏同步), naturalness (自然度) — with an
-optional note; each submission appends one line to `data/profile-evals.jsonl` (gitignored,
+three 1-5 dimensions — likeness (像不像本人), timing (节奏同步), naturalness (自然度) — with
+optional `likeNote`/`dislikeNote` fields (哪里像 / 哪里不像, deliberately two boxes: a single
+free-text note is negativity-biased, and separate positive/negative aspect labels are what a
+reward model can consume later); each submission appends one line to `data/profile-evals.jsonl` (gitignored,
 like the votes). When likeness is ≤ 3 the panel additionally asks for a `blame`
 attribution — "extract" (抽错了: video vs skeleton already differs), "retarget"
 (数字人没跟上: the skeleton is right but the avatar doesn't follow it), or "unsure"

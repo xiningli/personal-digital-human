@@ -86,7 +86,13 @@ export interface ProfileEval {
   timing: number;
   /** Does the motion look natural on its own? 1-5. */
   naturalness: number;
-  note?: string;
+  /**
+   * Aspect-level feedback, kept as two fields on purpose: a single free-text note is
+   * negativity-biased (people only write when unhappy), while separate like/dislike fields
+   * give balanced positive/negative aspect labels for reward modelling (docs/protocol.md §5).
+   */
+  likeNote?: string;
+  dislikeNote?: string;
   /**
    * Attribution for a low likeness score, asked only when likeness ≤ 3 (docs/protocol.md §5):
    * "extract" = video vs skeleton already differs (the extraction got it wrong),

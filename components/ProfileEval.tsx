@@ -106,7 +106,8 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
   const [timing, setTiming] = useState(0);
   const [naturalness, setNaturalness] = useState(0);
   const [blame, setBlame] = useState<Blame>("unsure");
-  const [note, setNote] = useState("");
+  const [likeNote, setLikeNote] = useState("");
+  const [dislikeNote, setDislikeNote] = useState("");
   const [stats, setStats] = useState<EvalStats | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -201,7 +202,8 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
     } else {
       setLikeness(0); setTiming(0); setNaturalness(0);
     }
-    setNote("");
+    setLikeNote("");
+    setDislikeNote("");
     setBlame("unsure");
     const video = videoRef.current;
     if (video?.paused) void video.play().catch(() => {});
@@ -341,14 +343,15 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
       const r = await fetch(`/api/profiles/${profile.id}/eval`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          likeness, timing, naturalness, note: note.trim() || undefined,
+          likeness, timing, naturalness,
+          likeNote: likeNote.trim() || undefined, dislikeNote: dislikeNote.trim() || undefined,
           ...(withBlame ? { blame } : {}),
           ...(seg !== null ? { segment: seg } : {}),
         }),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? `HTTP ${r.status}`);
-      setLikeness(0); setTiming(0); setNaturalness(0); setBlame("unsure"); setNote("");
+      setLikeness(0); setTiming(0); setNaturalness(0); setBlame("unsure"); setLikeNote(""); setDislikeNote("");
       loadStats();
       if (seg !== null && segments) {
         // Advance to the first unrated segment (counting this one as just rated);
@@ -515,9 +518,14 @@ export default function ProfileEval({ profile }: { profile: MotionProfile }) {
             ))}
           </fieldset>
         )}
-        <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
-          placeholder="备注（可选）：哪里像、哪里不像…"
-          className="w-full border rounded-lg px-3 py-2 text-sm" />
+        <div className="grid gap-2 sm:grid-cols-2">
+          <textarea value={likeNote} onChange={(e) => setLikeNote(e.target.value)} rows={2}
+            placeholder="哪里像（可选）：比如手位、站姿、点头时机…"
+            className="w-full border rounded-lg px-3 py-2 text-sm" />
+          <textarea value={dislikeNote} onChange={(e) => setDislikeNote(e.target.value)} rows={2}
+            placeholder="哪里不像（可选）：比如手臂太僵、脚步不对…"
+            className="w-full border rounded-lg px-3 py-2 text-sm" />
+        </div>
         <div className="flex items-center gap-3">
           <button onClick={submit} disabled={busy || !likeness || !timing || !naturalness || (mode === "segments" && current === null)}
             className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm disabled:opacity-50">
