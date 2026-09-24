@@ -77,6 +77,23 @@ rest-pose mismatch, a **varying** one is mangled motion. Two bugs were found tha
 Foot grounding still applies afterwards: generated motion is kinematic and knows nothing
 about the floor. The player does it for every motion source.
 
+## Balance: the "would it tip over" gate
+
+```bash
+.venv/bin/python check_track.py ../public/assets/model-clips.glb <track.json> --check
+.venv/bin/python correct_balance.py <track.json>     # fix pass, wired after refine_track
+```
+
+`balance.py` audits static balance on the exact FK the player runs: Dempster-fraction
+CoM, support polygon from the grounded feet, LIPM capture point CP = com + com_vel/ω.
+A **fall-risk run** — ≥1 s with both feet planted and CP >2 cm outside the polygon — is
+a pose no human holds without falling. check_track gates it (0 runs; worst excursion
+≤4 cm, calibrated 2026-09-23: Brunton tracks ≤1.15 cm, the raw TED stage track hit
+8.87 cm with 4 runs of 1.3–3.7 s). `correct_balance.py` rewrites flagged runs with a
+Hann-ramped hip-strategy counter-rotation (torso mass leans back over the feet; UpLeg
+world rotations restored exactly so the feet never move) — the TED track now passes.
+Physics and calibration口径 are in the two modules' docstrings.
+
 ## Next
 
 A diffusion model as a second candidate, ranked against EMAGE and the captures in the arena.

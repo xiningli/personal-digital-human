@@ -114,17 +114,24 @@ async function extract(profile: MotionProfile, opts: { start?: number; duration?
     // converge the GVHMR-estimated legs toward rest (see refine_track.py's docstring for the
     // measurements behind it). Additive, like segments: the raw track is backed up first and
     // a refine failure only lands in the log, never fails the profile.
+    // correct_balance.py runs right after: it rewrites any sustained fall-risk run (both
+    // feet planted while the capture point sits outside the foot support — motion/balance.py)
+    // with a Hann-ramped hip-strategy counter-rotation, keeping the feet exactly planted.
+    // Same additive contract: if it can't fix a run it exits nonzero, lands here in the log,
+    // and check_track.py's balance gate below is what fails the profile.
     try {
       await fs.copyFile(track, path.join(dir, "track.unrefined.json"));
       await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "refine_track.py"), track], MOTION);
+      await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "correct_balance.py"), track], MOTION);
     } catch (e) {
-      void log.write(`refine_track.py failed (profile still ready): ${e instanceof Error ? e.message : String(e)}\n`);
+      void log.write(`refine/balance post-pass failed (profile still ready): ${e instanceof Error ? e.message : String(e)}\n`);
     }
 
     // Quality gate on the final playback artifact: every check above fired on the
     // upstream npz, and refine then rewrote the track. check_track.py FKs the refined
     // track.json the player actually serves — clipping against the calibrated surfaces,
-    // foot float/skate, angular velocity — and a failure here fails the profile. It
+    // foot float/skate, angular velocity, balance (sustained capture-point excursions
+    // with both feet planted) — and a failure here fails the profile. It
     // runs after refine (the last step that mutates the track), so it is also what
     // judges the unrefined track when refine itself only logged its failure.
     await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "check_track.py"), AVATAR, track, "--check"], MOTION);

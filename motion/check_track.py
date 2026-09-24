@@ -35,6 +35,18 @@ Four checks:
 - **teleport / seizure**: adjacent-frame quaternion angular velocity per bone, deg/s.
   Gate: max <= 600 (the refined Brunton track's max is 429; the capture clips sit far
   below). p99 is reported for context.
+- **balance**: LIPM capture-point audit on this same FK (motion/balance.py): the CoM
+  (Dempster segment fractions on the avatar bones) plus its velocity gives the capture
+  point CP — where the body would have to step to stop. A "fall-risk run" is >= 1.0 s
+  of frames with BOTH feet planted and CP more than 2 cm outside the foot support
+  polygon: a pose no human holds without falling. Gates: sustained runs = 0, and the
+  worst per-frame CP excursion while both feet are planted <= 4 cm. Calibrated
+  2026-09-23 on the five ready profiles: the four Brunton lecture tracks never exceed
+  1.15 cm of excursion on any both-planted frame (p95 = 0) and have no runs at any
+  margin/sustain setting; the raw TED stage track reached 8.87 cm with 4 sustained
+  runs of 1.3-3.7 s (the speaker pacing/leaning with his feet out of frame — GVHMR
+  hallucinated the stance). correct_balance.py rewrites those runs (its docstring has
+  the corrected TED numbers).
 
 All metrics print always; --check lists the FAIL lines and exits nonzero.
 """
@@ -52,6 +64,7 @@ from refine_track import (  # noqa: E402
     Skeleton, calibrated_surfaces, clip_locals, fk_world, penetration_counts,
     qinv, qmul, read_glb, track_rot, TOES,
 )
+from balance import balance_stats  # noqa: E402
 
 SOLE_BELOW_TOE = 0.0524          # player/ground.ts: toe bone sits this far above the sole
 PLANT_MAX_SPEED_CM = 1.5         # planted = lower foot AND horizontal speed under this
@@ -63,6 +76,8 @@ GATES = {
     "foot_float_mean_max_cm": 8.0,
     "foot_skate_max_cm": 0.25,   # 2x the built-in-clips baseline p95 (see docstring)
     "angvel_max_deg_s": 600.0,
+    "balance_runs_max": 0.0,         # sustained both-feet-planted fall-risk runs
+    "balance_max_excursion_cm": 4.0,  # ~3.5x the Brunton tracks' worst frame (1.15 cm)
 }
 
 
@@ -148,6 +163,7 @@ def main() -> None:
 
     feet = foot_stats(pos, track["frames"])
     vel = angvel_stats(quats, fps)
+    bal = balance_stats(pos, fps)
 
     print()
     print(f"  clipping touch frames  {touch}   (deep {deep})  of {track['frames']}")
@@ -156,6 +172,11 @@ def main() -> None:
     print(f"  foot skate mean/max    {feet['skate_mean_cm']:.4f} / {feet['skate_max_cm']:.3f} cm/frame"
           f"   ({int(feet['planted_frames'])} planted frames)")
     print(f"  angular vel p99/max    {vel['p99']:.1f} / {vel['max']:.1f} deg/s")
+    worst_cm = bal["worst"]["max_excursion_m"] * 100 if bal["worst"] else 0.0
+    max_exc_cm = float(bal["excursion"][bal["planted2"]].max(initial=0.0)) * 100
+    print(f"  balance CP-outside     {bal['pct_outside']:.2f}% of frames"
+          f"   ({int(bal['planted2'].sum())} both-planted; sustained runs {len(bal['runs'])},"
+          f" worst {worst_cm:.1f} cm, max excursion {max_exc_cm:.2f} cm)")
 
     if calibrate and gltf.get("animations"):
         print()
@@ -191,6 +212,15 @@ def main() -> None:
     if vel["max"] > GATES["angvel_max_deg_s"]:
         failures.append(f"angular velocity max {vel['max']:.0f} deg/s > {GATES['angvel_max_deg_s']:g} "
                         f"(teleport/seizure flicker)")
+    if len(bal["runs"]) > GATES["balance_runs_max"]:
+        worst = bal["worst"]
+        failures.append(f"balance: {len(bal['runs'])} sustained fall-risk runs > {GATES['balance_runs_max']:g} "
+                        f"(worst {worst['duration_s']:.1f} s at {worst['start'] / fps:.1f} s, CP "
+                        f"{worst['max_excursion_m'] * 100:.1f} cm past the foot support with both feet "
+                        f"planted — the avatar would tip over)")
+    if max_exc_cm > GATES["balance_max_excursion_cm"]:
+        failures.append(f"balance: CP excursion {max_exc_cm:.1f} cm > {GATES['balance_max_excursion_cm']:g} "
+                        f"cm with both feet planted (leans past what the feet can hold)")
     print()
     if failures:
         for f in failures:
