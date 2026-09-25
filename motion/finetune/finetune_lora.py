@@ -15,6 +15,14 @@ expressions are all zeros, so the face latent has nothing to reconstruct). The n
 forward is skipped. AdamW on the LoRA params only, grad clip 0.99.
 
     ../.venv/bin/python finetune_lora.py --bs 16 --steps 3000 --lr 1e-4
+    ../.venv/bin/python finetune_lora.py --mix-meta data/beat2_s20_l64.json --mix-ratio 0.4 --out outputs_mix
+
+--mix-meta mixes a second dataset (the BEAT2 subset from prepare_beat2.py) into every
+batch as an anti-overfitting regularizer: --mix-ratio of each batch's items come from it,
+the rest from the profile windows, via two independent shuffled iterators. Every
+--eval-every steps the model is eval()'d on the held-out profile test windows and the rec
+losses are logged as test_rec_seed/test_rec_audio — the train/test gap is the overfitting
+signal the mixing is meant to shrink.
 
 Saves <out>/lora_only.pt (A/B weights) and <out>/emage_lora_merged/ (deltas merged back
 into the base model, save_pretrained — point generate.py's EMAGE_MODEL_PATH at it).
@@ -144,6 +152,56 @@ def get_cls_loss(pred, gt, cu, cl, ch, cf, cls_fn):
     )
 
 
+def forward_losses(model, motion_vq, batch, device, cls_fn):
+    """One train_val_fn-style pass: seed forward + fully-masked forward, rec+cls losses."""
+    motion_gt = batch["motion"].to(device).float()
+    audio = batch["audio"].to(device).float()
+    expressions_gt = batch["expressions"].to(device).float()
+    trans = batch["trans"].to(device).float()
+    foot_contact = batch["foot_contact"].to(device).float()
+
+    bs, t, jc = motion_gt.shape
+    motion_6d = rc.axis_angle_to_rotation_6d(motion_gt.reshape(bs, t, jc // 3, 3)).reshape(bs, t, -1)
+    with torch.no_grad():
+        latent_index = motion_vq.map2index(motion_6d, expressions_gt, tar_contact=foot_contact, tar_trans=trans)
+        latent = motion_vq.map2latent(motion_6d, expressions_gt, tar_contact=foot_contact, tar_trans=trans)
+    masked_motion = torch.cat([motion_6d, trans, foot_contact], dim=-1)
+    speaker_id = torch.zeros(bs, 1).long().to(device)
+
+    mask = torch.ones_like(masked_motion)
+    mask[:, :SEED_FRAMES] = 0
+    pred_seed = model(audio, speaker_id, masked_motion=masked_motion, mask=mask, use_audio=True)
+    loss_dict = {
+        "rec_seed": get_rec_loss(pred_seed, latent, LU, LL, LH, LF),
+        "cls_seed": get_cls_loss(pred_seed, latent_index, CU, CL, CH, CF, cls_fn),
+    }
+    mask = torch.ones_like(masked_motion)
+    pred_full = model(audio, speaker_id, masked_motion=masked_motion, mask=mask, use_audio=True)
+    loss_dict["rec_audio"] = get_rec_loss(pred_full, latent, LU, LL, LH, LF)
+    loss_dict["cls_audio"] = get_cls_loss(pred_full, latent_index, CU, CL, CH, CF, cls_fn)
+    return loss_dict
+
+
+def evaluate(model, motion_vq, loader, device, cls_fn):
+    """Mean rec losses over the held-out profile test windows (overfitting signal)."""
+    model.eval()
+    sums, cnt = {}, 0
+    with torch.no_grad():
+        for batch in loader:
+            for k, v in forward_losses(model, motion_vq, batch, device, cls_fn).items():
+                sums[k] = sums.get(k, 0.0) + float(v)
+            cnt += 1
+    model.train()
+    model.audio_encoder_face.eval()  # frozen BatchNorm running stats
+    model.audio_encoder_body.eval()
+    return {f"test_{k}": round(v / cnt, 4) for k, v in sums.items()}
+
+
+def cycle(loader):
+    while True:
+        yield from loader
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--bs", type=int, default=16)
@@ -151,6 +209,10 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--alpha", type=float, default=32.0)
+    ap.add_argument("--mix-meta", type=str, default=None,
+                    help="second meta JSON (e.g. BEAT2 subset); each batch draws --mix-ratio of its items from it")
+    ap.add_argument("--mix-ratio", type=float, default=0.4)
+    ap.add_argument("--eval-every", type=int, default=250)
     ap.add_argument("--out", type=str, default=str(Path(__file__).resolve().parent / "outputs"))
     args = ap.parse_args()
     out_dir = Path(args.out)
@@ -164,9 +226,21 @@ def main() -> None:
     cfg = OmegaConf.load(REPO / "configs" / "emage_audio.yaml")
     cfg.data.meta_paths = [str(META)]
     train_set = BEAT2DatasetEamgeFootContact(cfg, "train")
+    test_set = BEAT2DatasetEamgeFootContact(cfg, "test")
     loader = DataLoader(train_set, batch_size=args.bs, shuffle=True, drop_last=True,
                         num_workers=4, persistent_workers=True)
-    print(f"train windows: {len(train_set)}, batches/epoch: {len(loader)}", flush=True)
+    test_loader = DataLoader(test_set, batch_size=args.bs, shuffle=False, drop_last=False,
+                             num_workers=2, persistent_workers=False)
+    print(f"train windows: {len(train_set)}, batches/epoch: {len(loader)}, test windows: {len(test_set)}", flush=True)
+
+    mix_iter = None
+    if args.mix_meta:
+        cfg.data.meta_paths = [args.mix_meta]
+        mix_set = BEAT2DatasetEamgeFootContact(cfg, "train")
+        mix_loader = DataLoader(mix_set, batch_size=args.bs, shuffle=True, drop_last=True,
+                                num_workers=4, persistent_workers=True)
+        mix_iter = cycle(mix_loader)
+        print(f"mix windows: {len(mix_set)} at ratio {args.mix_ratio}", flush=True)
 
     part = lambda name: EmageVQVAEConv.from_pretrained(HF, subfolder=f"emage_vq/{name}").to(device)  # noqa: E731
     motion_vq = EmageVQModel(
@@ -200,47 +274,33 @@ def main() -> None:
         for batch in loader:
             if step >= args.steps:
                 break
+            if mix_iter is not None:
+                k_mix = round(args.bs * args.mix_ratio)
+                mix_batch = next(mix_iter)
+                batch = {key: torch.cat([batch[key][: args.bs - k_mix], mix_batch[key][:k_mix]])
+                         for key in batch}
             optimizer.zero_grad()
-            motion_gt = batch["motion"].to(device).float()
-            audio = batch["audio"].to(device).float()
-            expressions_gt = batch["expressions"].to(device).float()
-            trans = batch["trans"].to(device).float()
-            foot_contact = batch["foot_contact"].to(device).float()
-
-            bs, t, jc = motion_gt.shape
-            motion_6d = rc.axis_angle_to_rotation_6d(motion_gt.reshape(bs, t, jc // 3, 3)).reshape(bs, t, -1)
-            with torch.no_grad():
-                latent_index = motion_vq.map2index(motion_6d, expressions_gt, tar_contact=foot_contact, tar_trans=trans)
-                latent = motion_vq.map2latent(motion_6d, expressions_gt, tar_contact=foot_contact, tar_trans=trans)
-            masked_motion = torch.cat([motion_6d, trans, foot_contact], dim=-1)
-            speaker_id = torch.zeros(bs, 1).long().to(device)
-
-            mask = torch.ones_like(masked_motion)
-            mask[:, :SEED_FRAMES] = 0
-            pred_seed = model(audio, speaker_id, masked_motion=masked_motion, mask=mask, use_audio=True)
-            loss_dict = {
-                "rec_seed": get_rec_loss(pred_seed, latent, LU, LL, LH, LF),
-                "cls_seed": get_cls_loss(pred_seed, latent_index, CU, CL, CH, CF, cls_fn),
-            }
-            mask = torch.ones_like(masked_motion)
-            pred_full = model(audio, speaker_id, masked_motion=masked_motion, mask=mask, use_audio=True)
-            loss_dict["rec_audio"] = get_rec_loss(pred_full, latent, LU, LL, LH, LF)
-            loss_dict["cls_audio"] = get_cls_loss(pred_full, latent_index, CU, CL, CH, CF, cls_fn)
-
+            loss_dict = forward_losses(model, motion_vq, batch, device, cls_fn)
             loss = sum(loss_dict.values())
             torch.nn.utils.clip_grad_norm_(lora_params, 0.99)
             loss.backward()
             optimizer.step()
             step += 1
 
+            rec = None
             if step % LOG_EVERY == 0 or step == 1:
                 rec = {
                     "step": step,
                     **{k: round(float(v.detach()), 4) for k, v in loss_dict.items()},
-                    "all": round(float(loss), 4),
+                    "all": round(float(loss.detach()), 4),
                     "vram_reserved_gb": round(torch.cuda.memory_reserved() / 1e9, 2),
                     "elapsed_s": round(time.monotonic() - started, 1),
                 }
+            if step % args.eval_every == 0 or step == args.steps:
+                test_metrics = evaluate(model, motion_vq, test_loader, device, cls_fn)
+                rec = rec or {"step": step}
+                rec.update(test_metrics)
+            if rec:
                 log_f.write(json.dumps(rec) + "\n")
                 log_f.flush()
                 print(rec, flush=True)
