@@ -38,13 +38,19 @@ HF = "H-Liu1997/emage_audio"
 
 
 def load(device: torch.device):
+    """Main model defaults to the HF checkpoint; EMAGE_MODEL_PATH overrides it (e.g. the
+    merged LoRA checkpoint from finetune/finetune_lora.py). VQ/VAE subfolders always come
+    from HF — LoRA never touches them."""
+    import os
+
+    main_path = os.environ.get("EMAGE_MODEL_PATH", HF)
     part = lambda name: EmageVQVAEConv.from_pretrained(HF, subfolder=f"emage_vq/{name}").to(device)  # noqa: E731
     motion_vq = EmageVQModel(
         face_model=part("face"), upper_model=part("upper"),
         lower_model=part("lower"), hands_model=part("hands"),
         global_model=EmageVAEConv.from_pretrained(HF, subfolder="emage_vq/global").to(device),
     ).to(device).eval()
-    model = EmageAudioModel.from_pretrained(HF).to(device).eval()
+    model = EmageAudioModel.from_pretrained(main_path).to(device).eval()
     return model, motion_vq
 
 

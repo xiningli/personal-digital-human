@@ -28,6 +28,10 @@ __pycache__/
 /motion/out/
 /motion/*.log
 
+# EMAGE fine-tune: derived dataset copies and training outputs (rebuild via finetune/prepare_dataset.py)
+/motion/finetune/data/
+/motion/finetune/outputs*/
+
 # generated motion tracks (built by motion/build_tracks.py from the owner-voiced clips)
 /public/motion/
 
