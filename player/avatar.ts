@@ -27,6 +27,15 @@ export type AvatarState = 'loading' | 'ready' | 'failed';
 /** What the body is doing. Each names the motion-capture clips it may use, first found wins. */
 export type MotionState = 'idle' | 'speaking' | 'affirmative' | 'negative' | 'greeting';
 
+/** The one material the MetaPerson export gives the clothes; its texture is a flat garment atlas. */
+export const OUTFIT_MATERIAL = 'outfit';
+/**
+ * The chest of the shirt's front panel in that atlas, measured from the mesh on 2026-09-25: the
+ * front-facing vertices between 1.12 and 1.42 m up and within 14 cm of the centerline map here.
+ * The pocket is a separate island drawn over it, so a print sits partly behind the pocket.
+ */
+export const PRINT_AREA = { u: [0.077, 0.278], v: [0.136, 0.316] } as const;
+
 export const CLIP_FOR: Record<MotionState, string[]> = {
   idle: ['Breathing Idle', 'Idle'],
   // Speaking uses every listed clip the asset has, played one after another instead of
@@ -99,6 +108,9 @@ export class AvatarStage {
   motion: MotionState | null = null;
   face: Record<string, number> = {};
   root: THREE.Group | null = null;
+  /** What is printed on the shirt, kept so it survives a load that finishes after it was asked for. */
+  private print: CanvasImageSource | null = null;
+  private outfit: { material: THREE.MeshStandardMaterial; base: THREE.Texture; printed: THREE.CanvasTexture | null } | null = null;
   private renderer: THREE.WebGLRenderer;
   private ownsRenderer: boolean;
   private toes: THREE.Object3D[] = [];
@@ -265,6 +277,45 @@ export class AvatarStage {
     if (this.options.reduced?.()) this.render();
   }
 
+  /**
+   * Prints an image on the chest of the shirt, or takes it off with null. The source is fitted
+   * into PRINT_AREA of the outfit's own texture (a flat garment atlas, so nothing is warped) and
+   * composited over it once, on a canvas; the material then samples that canvas instead.
+   */
+  setPrint(source: CanvasImageSource | null) {
+    this.print = source;
+    this.applyPrint();
+  }
+  private applyPrint() {
+    const outfit = this.outfit;
+    if (!outfit) return;
+    const { material, base } = outfit;
+    outfit.printed?.dispose(); outfit.printed = null;
+    material.map = base;
+    const image = base.image as CanvasImageSource & { width?: number; height?: number } | undefined;
+    if (this.print && image?.width && image?.height) {
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width; canvas.height = image.height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(image, 0, 0);
+        const area = { x: PRINT_AREA.u[0] * canvas.width, y: PRINT_AREA.v[0] * canvas.height, w: (PRINT_AREA.u[1] - PRINT_AREA.u[0]) * canvas.width, h: (PRINT_AREA.v[1] - PRINT_AREA.v[0]) * canvas.height };
+        const src = this.print as { width?: number; height?: number };
+        const sw = Number(src.width) || area.w, sh = Number(src.height) || area.h;
+        const scale = Math.min(area.w / sw, area.h / sh);
+        const w = sw * scale, h = sh * scale;
+        ctx.drawImage(this.print, area.x + (area.w - w) / 2, area.y + (area.h - h) / 2, w, h);
+        const printed = new THREE.CanvasTexture(canvas);
+        printed.flipY = base.flipY; printed.colorSpace = base.colorSpace;
+        printed.wrapS = base.wrapS; printed.wrapT = base.wrapT; printed.anisotropy = base.anisotropy;
+        outfit.printed = printed;
+        material.map = printed;
+      }
+    }
+    material.needsUpdate = true;
+    if (this.options.reduced?.()) this.render();
+  }
+
   private still() { this.mixer?.update(0); this.ground(); this.applyFace(); this.render(); }
 
   /**
@@ -297,7 +348,10 @@ export class AvatarStage {
         if (mesh.isMesh && mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
           this.morphs.push({ influences: mesh.morphTargetInfluences, index: mesh.morphTargetDictionary });
         }
+        const material = mesh.isMesh ? mesh.material as THREE.MeshStandardMaterial : null;
+        if (material?.name === OUTFIT_MATERIAL && material.map && !this.outfit) this.outfit = { material, base: material.map, printed: null };
       });
+      this.applyPrint();
       this.options.onClips?.(gltf.animations.map(a => a.name));
       if (gltf.animations.length || this.options.track) {
         this.mixer = new THREE.AnimationMixer(this.root);
