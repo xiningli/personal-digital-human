@@ -35,6 +35,30 @@ export const OUTFIT_MATERIAL = 'outfit';
  * The pocket is a separate island drawn over it, so a print sits partly behind the pocket.
  */
 export const PRINT_AREA = { u: [0.077, 0.278], v: [0.136, 0.316] } as const;
+/**
+ * The chest pocket: 752 triangles sewn over the front panel as their own island of the atlas
+ * (measured 2026-09-25: u 0.5597–0.6194, v 0.8102–0.8850, no triangle straddling the edge, nothing
+ * else within the padded box). They are dropped from the index on load so the print is not
+ * covered; the panel beneath is whole.
+ */
+export const POCKET_AREA = { u: [0.555, 0.625], v: [0.805, 0.89] } as const;
+
+/** Removes every triangle whose three corners map inside `area` of the texture; returns how many. */
+export function stripIsland(geometry: THREE.BufferGeometry, area: { u: readonly [number, number]; v: readonly [number, number] }): number {
+  const uv = geometry.getAttribute('uv') as THREE.BufferAttribute | undefined;
+  const index = geometry.getIndex();
+  if (!uv || !index) return 0;
+  const inside = (i: number) => { const u = uv.getX(i), v = uv.getY(i); return u >= area.u[0] && u <= area.u[1] && v >= area.v[0] && v <= area.v[1]; };
+  const kept: number[] = [];
+  let dropped = 0;
+  for (let t = 0; t < index.count; t += 3) {
+    const a = index.getX(t), b = index.getX(t + 1), c = index.getX(t + 2);
+    if (inside(a) && inside(b) && inside(c)) { dropped++; continue; }
+    kept.push(a, b, c);
+  }
+  if (dropped) geometry.setIndex(kept);
+  return dropped;
+}
 
 export const CLIP_FOR: Record<MotionState, string[]> = {
   idle: ['Breathing Idle', 'Idle'],
@@ -349,7 +373,10 @@ export class AvatarStage {
           this.morphs.push({ influences: mesh.morphTargetInfluences, index: mesh.morphTargetDictionary });
         }
         const material = mesh.isMesh ? mesh.material as THREE.MeshStandardMaterial : null;
-        if (material?.name === OUTFIT_MATERIAL && material.map && !this.outfit) this.outfit = { material, base: material.map, printed: null };
+        if (material?.name === OUTFIT_MATERIAL && material.map && !this.outfit) {
+          this.outfit = { material, base: material.map, printed: null };
+          stripIsland(mesh.geometry, POCKET_AREA);
+        }
       });
       this.applyPrint();
       this.options.onClips?.(gltf.animations.map(a => a.name));
