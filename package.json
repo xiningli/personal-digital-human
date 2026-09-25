@@ -33,5 +33,7 @@
     "tailwindcss": "^3",
     "tsx": "^4",
     "typescript": "^5"
-  }
+  },
+  "license": "MIT",
+  "author": "Xining Li"
 }

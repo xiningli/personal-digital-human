@@ -13,7 +13,7 @@ bash scripts/import-avatar.sh   # public/assets/model-clips.glb from the site; i
 npm run dev                     # http://0.0.0.0:3020 (no HTTPS needed: no microphone here)
 ```
 
-Needs a voice service for speech: `STUDIO_TTS_URL` in `.env.local` (default the studio's backend on 127.0.0.1:8010; the owner runs an exported bundle on `p520:8010`). Reference clips come from the service's `GET /v1/profiles`. Ports 3000/8000 belong to another
+Needs a voice service for speech: `STUDIO_TTS_URL` in `.env.local` (default the studio's backend on 127.0.0.1:8010, or an exported bundle on another host). Reference clips come from the service's `GET /v1/profiles`. Ports 3000/8000 belong to another
 project; never kill what listens there.
 
 ## Contract

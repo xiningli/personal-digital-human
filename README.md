@@ -9,16 +9,20 @@ export as training data for a gesture policy.
 ## Run
 
 ```bash
-bash scripts/import-avatar.sh     # copies the avatar with the Mixamo clips from ~/digital-human/personal-site (never committed), then repairs the animation tracks (clean- + fix-avatar-motion.mjs)
+bash scripts/import-avatar.sh     # copies the avatar glb from a sibling personal-site checkout (never committed), then repairs the animation tracks (clean- + fix-avatar-motion.mjs)
 npm install
 npm run dev                       # http://<host>:3020/arena
 ```
 
-Speech comes from a voice service: the studio's backend on this machine
-(`bash backend/run.sh` in `~/digital-human/personal-voice-clone-studio`), or a bundle the studio's
-**Export** tab pushed to another host — set `STUDIO_TTS_URL` in `.env.local` (this
-checkout uses `http://p520:8010`, a resident service on the owner's second machine, so this
-card's memory stays free). The arena asks the service for its reference clips
+The avatar is never committed (see [THIRD_PARTY.md](THIRD_PARTY.md)). Without the sibling
+checkout, drop any glb with a Mixamo-named rig and ARKit head blendshapes at
+`public/assets/model-clips.glb` yourself; `SITE_ROOT=/path/to/site bash scripts/import-avatar.sh`
+also works.
+
+Speech comes from a voice service: the studio's backend on the same machine
+(`bash backend/run.sh` in the sibling `personal-voice-clone-studio` checkout), or a bundle the studio's
+**Export** tab pushed to another host — set `STUDIO_TTS_URL` in `.env.local` (e.g.
+`http://127.0.0.1:8010`). The arena asks the service for its reference clips
 (`GET /v1/profiles`) and never needs the studio's files. Without a ready service a round
 cannot be drawn and the page says so.
 
@@ -66,3 +70,7 @@ cloned voice), `public/assets/model-clips.glb` (Mixamo clips, see `THIRD_PARTY.m
 ```bash
 npm test && npx tsc --noEmit && npx eslint .
 ```
+
+## License
+
+MIT (see [LICENSE](LICENSE)). Third-party assets and their terms: [THIRD_PARTY.md](THIRD_PARTY.md).
