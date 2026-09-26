@@ -162,6 +162,12 @@ def main() -> None:
         print("  (no capture clips in the glb: clipping check skipped)")
 
     feet = foot_stats(pos, track["frames"])
+    # Torso lean, hips to head against vertical: what a viewer reads as "tipping over" even
+    # when the capture point stays inside the feet (2026-09-25: the TED profile leaned 16-19
+    # degrees sideways for seconds before the balance gate audited single-support frames).
+    lean = pos["Head"] - pos["Hips"]
+    lateral = np.degrees(np.arctan2(np.abs(lean[:, 0]), lean[:, 1]))
+    forward = np.degrees(np.arctan2(np.abs(lean[:, 2]), lean[:, 1]))
     vel = angvel_stats(quats, fps)
     bal = balance_stats(pos, fps)
 
@@ -172,10 +178,12 @@ def main() -> None:
     print(f"  foot skate mean/max    {feet['skate_mean_cm']:.4f} / {feet['skate_max_cm']:.3f} cm/frame"
           f"   ({int(feet['planted_frames'])} planted frames)")
     print(f"  angular vel p99/max    {vel['p99']:.1f} / {vel['max']:.1f} deg/s")
+    print(f"  torso lean p95/max     lateral {np.percentile(lateral, 95):.1f} / {lateral.max():.1f} deg,"
+          f" forward {np.percentile(forward, 95):.1f} / {forward.max():.1f} deg")
     worst_cm = bal["worst"]["max_excursion_m"] * 100 if bal["worst"] else 0.0
-    max_exc_cm = float(bal["excursion"][bal["planted2"]].max(initial=0.0)) * 100
+    max_exc_cm = float(bal["excursion"][bal["supported"]].max(initial=0.0)) * 100
     print(f"  balance CP-outside     {bal['pct_outside']:.2f}% of frames"
-          f"   ({int(bal['planted2'].sum())} both-planted; sustained runs {len(bal['runs'])},"
+          f"   ({int(bal['planted2'].sum())} both-planted, {bal['pct_single_support']:.0f}% single-support; sustained runs {len(bal['runs'])},"
           f" worst {worst_cm:.1f} cm, max excursion {max_exc_cm:.2f} cm)")
 
     if calibrate and gltf.get("animations"):

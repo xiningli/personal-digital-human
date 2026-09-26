@@ -195,7 +195,7 @@ def correct(track: dict, skel: Skeleton) -> tuple[np.ndarray, dict]:
         "runs_before": runs_fixed,
         "runs_after": len(st["runs"]),
         "max_excursion_cm_after": round(
-            float(st["excursion"][st["planted2"]].max(initial=0.0)) * 100, 2),
+            float(st["excursion"][st["supported"]].max(initial=0.0)) * 100, 2),
         "max_correction_deg": round(float(np.degrees(total_theta.max())), 2),
     }
 

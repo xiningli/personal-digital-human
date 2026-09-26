@@ -15,22 +15,28 @@ check_track.py), so what is measured is what plays. Segment masses are Dempster
 fractions mapped onto the Mixamo-style bones (SEGMENTS, normalized); the whole-
 body CoM is the mass-weighted assembly of segment midpoints. The floor is the
 track's own: the runtime presses the lower toe to the sole offset
-(check_track.py SOLE_BELOW_TOE), so floor_y = min toe world Y over the track,
-and a foot counts as planted while its toe stays within GROUND_MARGIN of it.
+(check_track.py SOLE_BELOW_TOE) on EVERY frame, so the reference a foot is
+planted against is the other foot, not the track's global minimum: a foot
+counts as planted while its toe stays within GROUND_MARGIN of the lower toe of
+that frame. (Until 2026-09-25 the reference was the global minimum, which left
+the higher foot of a stance "airborne" and 80% of the TED profile unaudited —
+where the torso leaned 16–19° sideways over two feet that both sat on the
+floor as played; the owner saw it tip and asked why the gate let it through.)
 
-A "fall-risk run" is a maximal run of frames where BOTH feet are planted and
-the CP stays more than EXCURSION_MARGIN outside the support polygon; a run of
-at least SUSTAIN_S is sustained. Used by check_track.py (gate) and
-correct_balance.py (fix).
+A "fall-risk run" is a maximal run of frames where the CP stays more than
+EXCURSION_MARGIN outside the support polygon of the planted feet — both feet,
+or the one foot of a single-support stance, which a body cannot lean past
+either; a run of at least SUSTAIN_S is sustained. Used by check_track.py (gate)
+and correct_balance.py (fix).
 """
 from __future__ import annotations
 
 import numpy as np
 
 G = 9.81
-GROUND_MARGIN = 0.05       # toe within this of the track's floor = planted (m)
+GROUND_MARGIN = 0.05       # toe within this of the frame's lower toe = planted (m)
 EXCURSION_MARGIN = 0.02    # CP must be this far outside the polygon to count (m)
-SUSTAIN_S = 1.0            # a both-feet-planted run this long is a fall-risk run
+SUSTAIN_S = 1.0            # a CP-outside run this long is a fall-risk run
 
 # (Dempster mass fraction, bones whose world-position midpoint is the segment CoM;
 #  a single bone = joint point). Fractions are normalized by their sum at assembly.
@@ -94,10 +100,12 @@ def _hull(pts: np.ndarray) -> np.ndarray:
 
 def support_polygon(pos: dict[str, np.ndarray], frame: int, fl: float,
                     ground_margin: float = GROUND_MARGIN) -> np.ndarray | None:
-    """Hull of the grounded feet's ankle+toe xz points at a frame; None if airborne."""
+    """Hull of the planted feet's ankle+toe xz points at a frame. Never None: the lower
+    foot is always pressed to the floor as played; `fl` is kept for callers' signatures."""
     pts = []
+    lower = min(pos[toe][frame, 1] for _, toe in FEET)
     for ankle, toe in FEET:
-        if pos[toe][frame, 1] - fl < ground_margin:
+        if pos[toe][frame, 1] - lower < ground_margin:
             pts.append(pos[ankle][frame, [0, 2]])
             pts.append(pos[toe][frame, [0, 2]])
     if not pts:
@@ -134,10 +142,20 @@ def cp_distance(pt: np.ndarray, hull: np.ndarray | None) -> float:
     return 0.0 if inside else best
 
 
+def planted(pos: dict[str, np.ndarray], ground_margin: float = GROUND_MARGIN) -> np.ndarray:
+    """(F, len(FEET)) bool: each toe within ground_margin of the frame's lower toe.
+
+    The lower toe is what the runtime presses to the floor, so it is planted by
+    definition; the other foot is planted while it rides within the margin of it.
+    """
+    toes = np.stack([pos[toe][:, 1] for _, toe in FEET], axis=1)
+    return toes - toes.min(axis=1, keepdims=True) < ground_margin
+
+
 def both_planted(pos: dict[str, np.ndarray], fl: float,
                  ground_margin: float = GROUND_MARGIN) -> np.ndarray:
-    """(F,) bool: both toes within ground_margin of the floor."""
-    return np.all([pos[toe][:, 1] - fl < ground_margin for _, toe in FEET], axis=0)
+    """(F,) bool: both toes planted (see planted()); `fl` is kept for callers' signatures."""
+    return np.all(planted(pos, ground_margin), axis=1)
 
 
 def capture_point(com: np.ndarray, fps: float, fl: float) -> np.ndarray:
@@ -152,9 +170,11 @@ def capture_point(com: np.ndarray, fps: float, fl: float) -> np.ndarray:
 def fall_risk_runs(excursion: np.ndarray, planted2: np.ndarray, fps: float,
                    margin: float = EXCURSION_MARGIN,
                    sustain_s: float = SUSTAIN_S) -> tuple[list[dict], int]:
-    """Maximal runs of both-feet-planted frames with CP outside the polygon by > margin.
+    """Maximal runs of audited frames with CP outside the polygon by > margin.
 
-    excursion: (F,) CP distance to the support polygon (0 inside; inf airborne).
+    planted2 names the frames to audit — every frame since 2026-09-25: the lower foot
+    is always on the floor as played, and a body cannot lean past one foot either.
+    excursion: (F,) CP distance to the support polygon (0 inside).
     Returns dicts {start, end, duration_s, max_excursion_m, peak} for runs of at
     least sustain_s seconds; shorter runs are reported by balance_stats as counts only.
     """
@@ -188,20 +208,24 @@ def balance_stats(pos: dict[str, np.ndarray], fps: float,
     fl = floor_y(pos)
     com = com_track(pos)
     cp = capture_point(com, fps, fl)
+    feet = planted(pos)
     planted2 = both_planted(pos, fl)
+    supported = np.ones(nframes, dtype=bool)   # the lower foot is always pressed down
 
     excursion = np.zeros(nframes)
     for f in range(nframes):
         excursion[f] = cp_distance(cp[f], support_polygon(pos, f, fl))
 
-    outside = planted2 & (excursion > margin)
-    runs, short = fall_risk_runs(excursion, planted2, fps, margin, sustain_s)
+    outside = supported & (excursion > margin)
+    runs, short = fall_risk_runs(excursion, supported, fps, margin, sustain_s)
     worst = max(runs, key=lambda r: r["max_excursion_m"], default=None)
     return {
         "floor_y": fl,
         "com": com,
         "cp": cp,
         "planted2": planted2,
+        "supported": supported,
+        "pct_single_support": float(100.0 * (feet.sum(axis=1) == 1).sum() / nframes),
         "excursion": excursion,
         "pct_outside": float(100.0 * outside.sum() / nframes),
         "short_runs": short,
