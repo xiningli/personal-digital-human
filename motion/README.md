@@ -77,22 +77,42 @@ rest-pose mismatch, a **varying** one is mangled motion. Two bugs were found tha
 Foot grounding still applies afterwards: generated motion is kinematic and knows nothing
 about the floor. The player does it for every motion source.
 
-## Balance: the "would it tip over" gate
+## Grounding and balance: feet first
 
 ```bash
+.venv/bin/python ground_track.py <track.json>        # wired after refine_track (lib/profiles.ts)
 .venv/bin/python check_track.py ../public/assets/model-clips.glb <track.json> --check
-.venv/bin/python correct_balance.py <track.json>     # fix pass, wired after refine_track
+.venv/bin/python physics_audit.py ../public/assets/model-clips.glb <track.json> "clip:Talking"
 ```
+
+Retargeting drops the root translation, so a raw track pins the pelvis in space and the
+feet go wherever the leg rotations put them: measured on the TED stage track as shipped
+until 2026-09-28, a planted foot travelled up to 31 cm inside one stance, the source's steps
+became steps in place, and the runtime ground shift bobbed the body 6.6 cm. `ground_track.py`
+solves the body from the ground up instead: both feet fixed at one natural stance (shared
+with every capture clip in the asset — `scripts/ground-avatar-clips.mjs` runs the same pass
+over them, which also undoes their crouched 34–43 cm retargeting stance), the pelvis carrying
+a slow, bounded weight shift with the CoM and capture point held over the feet, legs by
+two-bone IK with the knee over the toes, then hands cleared of the moved thighs. The track
+gains a `hips` array that the player plays as `Hips.position`.
 
 `balance.py` audits static balance on the exact FK the player runs: Dempster-fraction
 CoM, support polygon from the grounded feet, LIPM capture point CP = com + com_vel/ω.
-A **fall-risk run** — ≥1 s with both feet planted and CP >2 cm outside the polygon — is
-a pose no human holds without falling. check_track gates it (0 runs; worst excursion
-≤4 cm, calibrated 2026-09-23: Brunton tracks ≤1.15 cm, the raw TED stage track hit
-8.87 cm with 4 runs of 1.3–3.7 s). `correct_balance.py` rewrites flagged runs with a
-Hann-ramped hip-strategy counter-rotation (torso mass leans back over the feet; UpLeg
-world rotations restored exactly so the feet never move) — the TED track now passes.
-Physics and calibration口径 are in the two modules' docstrings.
+A **fall-risk run** — ≥1 s with CP >2 cm outside the polygon — is a pose no human holds
+without falling. check_track gates it (0 runs; worst excursion ≤4 cm) and, since
+2026-09-28, the per-stance travel of a planted foot (≤2 cm; the per-frame skate gate cannot
+see slow drift). `physics_audit.py` reports the physical laws a viewer checks — planted-foot
+travel, steps in place, CoM vertical acceleration, zero-moment point against the feet — side
+by side for any tracks and clips. `correct_balance.py` (pelvis tilting, 2026-09-23) is
+superseded by ground_track.py and no longer wired in.
+
+| TED stage track, as played | before (pinned pelvis) | grounded | Talking capture |
+|---|---|---|---|
+| planted-foot travel per stance, max | 30.8 cm | 0.04 cm | 0.6 cm |
+| steps in place per minute | 8.4 | 0 | 0 |
+| runtime ground shift range | 6.6 cm | 0 | 0 |
+| ZMP > 2 cm outside the feet | 16% of frames | 0.3% | 20% |
+| torso lean lateral p95 | 10.8° | 8.0° | 7.1° |
 
 ## Next
 

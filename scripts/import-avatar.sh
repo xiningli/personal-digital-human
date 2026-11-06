@@ -26,3 +26,8 @@ node scripts/clean-avatar-animations.mjs public/assets/model-clips.glb
 # translation track that keeps the planted foot from skating. Idempotent, so re-importing an
 # already-fixed source is a no-op.
 node scripts/fix-avatar-motion.mjs public/assets/model-clips.glb
+
+# Then put every clip on the same feet (see ground-avatar-clips.mjs / motion/ground_track.py):
+# one natural stance shared with the speaking tracks, the pelvis carrying the weight shift, legs
+# solved by IK. Idempotent (marked in each animation's extras).
+node scripts/ground-avatar-clips.mjs public/assets/model-clips.glb

@@ -114,15 +114,17 @@ async function extract(profile: MotionProfile, opts: { start?: number; duration?
     // converge the GVHMR-estimated legs toward rest (see refine_track.py's docstring for the
     // measurements behind it). Additive, like segments: the raw track is backed up first and
     // a refine failure only lands in the log, never fails the profile.
-    // correct_balance.py runs right after: it rewrites any sustained fall-risk run (both
-    // feet planted while the capture point sits outside the foot support — motion/balance.py)
-    // with a Hann-ramped hip-strategy counter-rotation, keeping the feet exactly planted.
-    // Same additive contract: if it can't fix a run it exits nonzero, lands here in the log,
-    // and check_track.py's balance gate below is what fails the profile.
+    // ground_track.py runs right after: retargeting drops the root translation, so the track
+    // would play with the pelvis pinned and the feet skating under it. It roots the body at
+    // the feet instead — one fixed stance shared with the asset's clips, a pelvis translation
+    // that carries the weight shift and keeps the CoM/capture point over the feet, legs by
+    // two-bone IK (see its docstring; it replaced correct_balance.py's pelvis tilting).
+    // Same additive contract: a failure lands in the log, and check_track.py below is what
+    // fails the profile.
     try {
       await fs.copyFile(track, path.join(dir, "track.unrefined.json"));
       await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "refine_track.py"), track], MOTION);
-      await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "correct_balance.py"), track], MOTION);
+      await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "ground_track.py"), track], MOTION);
     } catch (e) {
       void log.write(`refine/balance post-pass failed (profile still ready): ${e instanceof Error ? e.message : String(e)}\n`);
     }

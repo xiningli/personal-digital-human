@@ -48,6 +48,15 @@ Four checks:
   hallucinated the stance). correct_balance.py rewrites those runs (its docstring has
   the corrected TED numbers).
 
+- **stance travel** (2026-09-28): the per-frame skate gate cannot see slow drift — the TED
+  stage track passed it at 0.14 cm/frame while a planted foot travelled 31 cm inside one
+  stance, 200 frames at a time (motion/physics_audit.py). Per stance (same foot lower and
+  under the planted speed), the foot's horizontal distance from where it landed; gate: max
+  <= 2 cm. A track grounded by ground_track.py measures 0.
+
+When the track carries a "hips" translation (ground_track.py), the FK uses it, exactly as
+player/avatar.ts trackToClip plays it.
+
 All metrics print always; --check lists the FAIL lines and exits nonzero.
 """
 from __future__ import annotations
@@ -65,6 +74,7 @@ from refine_track import (  # noqa: E402
     qinv, qmul, read_glb, track_rot, TOES,
 )
 from balance import balance_stats  # noqa: E402
+from physics_audit import stances  # noqa: E402
 
 SOLE_BELOW_TOE = 0.0524          # player/ground.ts: toe bone sits this far above the sole
 PLANT_MAX_SPEED_CM = 1.5         # planted = lower foot AND horizontal speed under this
@@ -78,6 +88,7 @@ GATES = {
     "angvel_max_deg_s": 600.0,
     "balance_runs_max": 0.0,         # sustained both-feet-planted fall-risk runs
     "balance_max_excursion_cm": 4.0,  # ~3.5x the Brunton tracks' worst frame (1.15 cm)
+    "stance_travel_max_cm": 2.0,      # capture clips measure <= 0.63 cm (physics_audit.py)
 }
 
 
@@ -153,7 +164,8 @@ def main() -> None:
     print(f"{track_path.name}: {track['frames']} frames x {len(bones)} bones at {fps:g} fps"
           + (f", refined v{track['refined']['version']}" if track.get("refined") else ", unrefined"))
 
-    pos = fk_world(skel, track_rot(bones, quats), {}, track["frames"])
+    tr = {"Hips": np.array(track["hips"], dtype=float).reshape(track["frames"], 3)} if track.get("hips") else {}
+    pos = fk_world(skel, track_rot(bones, quats), tr, track["frames"])
 
     if surfaces is not None:
         touch, deep = penetration_counts(pos, surfaces)
@@ -168,6 +180,7 @@ def main() -> None:
     lean = pos["Head"] - pos["Hips"]
     lateral = np.degrees(np.arctan2(np.abs(lean[:, 0]), lean[:, 1]))
     forward = np.degrees(np.arctan2(np.abs(lean[:, 2]), lean[:, 1]))
+    travel = max((d for *_, d in stances(pos, track["frames"])[0]), default=0.0) * 100
     vel = angvel_stats(quats, fps)
     bal = balance_stats(pos, fps)
 
@@ -177,6 +190,7 @@ def main() -> None:
           f"   (lower toe; sole at {SOLE_BELOW_TOE * 100:.2f} cm)")
     print(f"  foot skate mean/max    {feet['skate_mean_cm']:.4f} / {feet['skate_max_cm']:.3f} cm/frame"
           f"   ({int(feet['planted_frames'])} planted frames)")
+    print(f"  stance travel max      {travel:.2f} cm   (a planted foot's drift inside one stance)")
     print(f"  angular vel p99/max    {vel['p99']:.1f} / {vel['max']:.1f} deg/s")
     print(f"  torso lean p95/max     lateral {np.percentile(lateral, 95):.1f} / {lateral.max():.1f} deg,"
           f" forward {np.percentile(forward, 95):.1f} / {forward.max():.1f} deg")
@@ -217,6 +231,9 @@ def main() -> None:
     if feet["skate_mean_cm"] > GATES["foot_skate_max_cm"]:
         failures.append(f"foot skate {feet['skate_mean_cm']:.4f} cm/frame > {GATES['foot_skate_max_cm']:g} "
                         f"(planted feet slide)")
+    if travel > GATES["stance_travel_max_cm"]:
+        failures.append(f"stance travel {travel:.1f} cm > {GATES['stance_travel_max_cm']:g} "
+                        f"(a planted foot drifts while loaded: the body floats over the floor)")
     if vel["max"] > GATES["angvel_max_deg_s"]:
         failures.append(f"angular velocity max {vel['max']:.0f} deg/s > {GATES['angvel_max_deg_s']:g} "
                         f"(teleport/seizure flicker)")

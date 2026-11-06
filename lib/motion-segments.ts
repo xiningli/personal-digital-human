@@ -45,6 +45,9 @@ export function splitSentences(text: string): string[] {
 export function assembleTrack(track: MotionTrack, picks: SegmentPick[], blendFrames = 9): MotionTrack {
   const { fps, frames, bones, quats } = track;
   const B = bones.length;
+  // A grounded track (motion/ground_track.py) carries the pelvis translation; every segment
+  // stands on the same feet, so the pelvis is spliced and blended with the rotations.
+  const src = track.hips?.length === frames * 3 ? track.hips : null;
   const ranges = picks
     .map((p) => ({
       start: Math.max(0, Math.min(Math.min(p.startFrame, p.endFrame), frames - 1)),
@@ -62,6 +65,7 @@ export function assembleTrack(track: MotionTrack, picks: SegmentPick[], blendFra
   });
   const total = lens.reduce((s, n) => s + n, 0) - blends.reduce((s, n) => s + n, 0);
   const out = new Array<number>(total * B * 4);
+  const hips = src ? new Array<number>(total * 3) : null;
 
   const qa = new Quaternion();
   const qb = new Quaternion();
@@ -86,6 +90,10 @@ export function assembleTrack(track: MotionTrack, picks: SegmentPick[], blendFra
           qo.slerpQuaternions(qa, qb, t);
           out[o] = qo.x; out[o + 1] = qo.y; out[o + 2] = qo.z; out[o + 3] = qo.w;
         }
+        if (hips && src) for (let k = 0; k < 3; k++) {
+          const o = (dst - blend + j) * 3 + k;
+          hips[o] = hips[o] * (1 - t) + src[(start + j) * 3 + k] * t;
+        }
       }
     }
     for (let f = start + blend; f < end; f++) {
@@ -94,8 +102,9 @@ export function assembleTrack(track: MotionTrack, picks: SegmentPick[], blendFra
         const o = (dst * B + b) * 4;
         out[o] = qa.x; out[o + 1] = qa.y; out[o + 2] = qa.z; out[o + 3] = qa.w;
       }
+      if (hips && src) for (let k = 0; k < 3; k++) hips[dst * 3 + k] = src[f * 3 + k];
       dst++;
     }
   }
-  return { fps, frames: total, bones: bones.slice(), quats: out };
+  return { fps, frames: total, bones: bones.slice(), quats: out, ...(hips ? { hips } : {}) };
 }

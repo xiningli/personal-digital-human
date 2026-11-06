@@ -76,12 +76,18 @@ export const CLIP_FOR: Record<MotionState, string[]> = {
 /**
  * Motion produced by a model and retargeted onto this rig: local rotations per bone per
  * frame, xyzw, flattened frame-major. `motion/retarget.py` writes it.
+ *
+ * `hips` is the pelvis translation per frame (x, y, z, flattened), written by
+ * `motion/ground_track.py`. Without it the pelvis stays pinned in space and the feet go
+ * wherever the leg rotations put them, which is the floating/skating body; with it, the feet
+ * stay planted and the pelvis carries the weight shift.
  */
 export interface MotionTrack {
   fps: number;
   frames: number;
   bones: string[];
   quats: number[];
+  hips?: number[];
 }
 
 export interface AvatarOptions {
@@ -121,6 +127,7 @@ export function trackToClip(track: MotionTrack, name = 'generated'): THREE.Anima
     }
     curves.push(new THREE.QuaternionKeyframeTrack(`${bones[b]}.quaternion`, times, values));
   }
+  if (track.hips?.length === frames * 3) curves.push(new THREE.VectorKeyframeTrack('Hips.position', times, Float32Array.from(track.hips)));
   return new THREE.AnimationClip(name, frames / fps, curves);
 }
 
@@ -270,7 +277,10 @@ export class AvatarStage {
 
   private play(action: THREE.AnimationAction | undefined) {
     if (!action || action === this.action) return;
-    action.reset(); action.play();
+    // A generated track is minutes of one talk; restarting it at frame 0 on every answer
+    // replays the same opening gestures each time. It resumes where the last answer left it.
+    const resume = action === this.generated ? action.time : 0;
+    action.reset(); action.time = resume; action.play();
     if (this.action) this.action.crossFadeTo(action, FADE, false);
     this.action = action;
     if (this.options.reduced?.()) this.still();
@@ -343,9 +353,9 @@ export class AvatarStage {
   private still() { this.mixer?.update(0); this.ground(); this.applyFace(); this.render(); }
 
   /**
-   * Put the lower foot on the floor. The clips were retargeted with the hips' translation
-   * locked at its bind value, so any leg flexion lifts both feet and an asymmetric stance lifts
-   * one more than the other. Measured on the Talking clip: soles 3.7 cm and 4.9 cm up.
+   * Put the lower foot on the floor. Since 2026-09-28 the clips and the speaking tracks are
+   * solved onto the floor from the feet up (motion/ground_track.py) and this measures ~0; it
+   * stays as the safety net for motion that was not (an unprocessed track, a crossfade).
    */
   private ground() {
     if (!this.root || !this.toes.length) return;
