@@ -30,3 +30,23 @@ test("assembleTrack splices and blends the pelvis with the rotations", async () 
   for (let f = 1; f < out.frames; f++) assert.ok(Math.abs(out.hips![f * 3] - out.hips![(f - 1) * 3]) <= 0.07, `pelvis jumps at ${f}`);
   assert.equal(assembleTrack({ ...base, frames, quats }, [{ startFrame: 0, endFrame: 5 }]).hips, undefined);
 });
+
+test("fadeFor scales with the pose gap and stays clamped", async () => {
+  const { fadeFor } = await import("../player/avatar");
+  assert.equal(fadeFor(0), 0.35);                 // nothing to travel: the old fade
+  assert.ok(Math.abs(fadeFor(1.08) - 0.9) < 1e-9); // the measured idle<->speaking gap: 0.9 s
+  assert.equal(fadeFor(5), 1.2);                  // never longer than FADE_MAX
+});
+
+test("matchFrame finds the frame nearest the pose within the window", async () => {
+  const { matchFrame, quatAngle } = await import("../player/avatar");
+  const ang = (a: number) => [Math.sin(a / 2), 0, 0, Math.cos(a / 2)];   // rotation about x
+  const frames = 30;
+  const quats = Array.from({ length: frames }, (_, f) => ang(f === 21 ? 0.1 : 1.0)).flat();
+  const track: MotionTrack = { fps: 30, frames, bones: ["LeftHand"], quats };
+  const pose = new Map([["LeftHand", ang(0.12)]]);
+  const hit = matchFrame(track, pose, 0, 1);
+  assert.equal(hit.frame, 21);
+  assert.ok(Math.abs(hit.gap - quatAngle(ang(0.12), ang(0.1))) < 1e-6);
+  assert.equal(matchFrame(track, new Map([["Nope", ang(0)]]), 5).frame, 5);   // no watched bone: stay
+});

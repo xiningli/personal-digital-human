@@ -108,6 +108,55 @@ export interface AvatarOptions {
 interface MorphSurface { influences: number[]; index: Record<string, number> }
 
 const FADE = .35;
+/**
+ * Crossfades are timed by how far the body has to travel, not by a constant. Measured on the
+ * live TEDx speaking track against Breathing Idle (2026-11-06): the wrists sit 48–61° apart in
+ * the two, so a fixed 0.35 s fade swung a hand at about 3.1 rad/s while the rest of the body
+ * held still — three times the track's own arm speed (p90 1.12 rad/s) and the "snap" visitors
+ * saw at the start and end of every answer. A fade now lasts gap / FADE_SPEED, clamped.
+ */
+const FADE_SPEED = 1.2;          // rad/s of the bone that has furthest to go
+const FADE_MIN = .35, FADE_MAX = 1.2;
+/** The bones a viewer watches in a transition; legs are grounded separately. */
+const WATCH = ['Spine', 'Spine1', 'Spine2', 'Neck', 'Head', 'LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm',
+  'LeftForeArm', 'RightForeArm', 'LeftHand', 'RightHand'];
+/** How far ahead a resumed speaking track may jump to find the frame nearest the current pose. */
+const MATCH_AHEAD_S = 20;
+
+/** Angle in radians between two unit quaternions given as xyzw. */
+export function quatAngle(a: ArrayLike<number>, b: ArrayLike<number>): number {
+  const dot = Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+  return 2 * Math.acos(Math.min(1, dot));
+}
+
+/** The fade length for a pose gap: long enough that no watched bone outruns FADE_SPEED. */
+export function fadeFor(gap: number): number {
+  return Math.min(FADE_MAX, Math.max(FADE_MIN, gap / FADE_SPEED));
+}
+
+/**
+ * The frame of `track`, within MATCH_AHEAD_S after `from` (wrapping), whose watched bones are
+ * nearest `pose` (bone name -> xyzw). The cost is the largest bone angle, the same quantity
+ * the fade is timed by. Returns `from` when no watched bone is in the track.
+ */
+export function matchFrame(track: MotionTrack, pose: Map<string, ArrayLike<number>>, from: number, step = 3): { frame: number; gap: number } {
+  const cols = track.bones.map((b, i) => [i, pose.get(b)] as const).filter(([, q]) => q) as [number, ArrayLike<number>][];
+  if (!cols.length) return { frame: from, gap: 0 };
+  const n = track.bones.length;
+  let best = { frame: from, gap: Infinity };
+  const ahead = Math.min(track.frames, Math.round(MATCH_AHEAD_S * track.fps));
+  for (let k = 0; k < ahead; k += step) {
+    const f = (from + k) % track.frames;
+    let gap = 0;
+    for (const [i, q] of cols) {
+      const o = (f * n + i) * 4;
+      gap = Math.max(gap, quatAngle(q, [track.quats[o], track.quats[o + 1], track.quats[o + 2], track.quats[o + 3]]));
+      if (gap >= best.gap) break;
+    }
+    if (gap < best.gap) best = { frame: f, gap };
+  }
+  return best;
+}
 const TOES = ['LeftToeBase', 'RightToeBase'];
 
 /** States that play their clip once and then settle back to idle, instead of looping it. */
@@ -152,6 +201,8 @@ export class AvatarStage {
   private action: THREE.AnimationAction | null = null;
   /** The action built from `options.track` or the last `setTrack` call, for uncaching on swap. */
   private generated: THREE.AnimationAction | null = null;
+  /** The data behind `generated`, for pose matching on resume. */
+  private generatedTrack: MotionTrack | null = null;
   /** Every speaking clip the asset has, played in turn (empty when speaking is pinned or generated). */
   private speaking: THREE.AnimationAction[] = [];
   private speakIndex = 0;
@@ -233,12 +284,14 @@ export class AvatarStage {
       this.mixer?.uncacheClip(prev.getClip());
       this.actions.delete('speaking');
       this.generated = null;
+      this.generatedTrack = null;
       if (this.action === prev) this.action = null;
     }
     if (track && this.mixer) {
       const action = this.mixer.clipAction(trackToClip(track)).setLoop(THREE.LoopRepeat, Infinity);
       this.actions.set('speaking', action);
       this.generated = action;
+      this.generatedTrack = track;
       if (this.motion === 'speaking') this.play(action);
     }
   }
@@ -279,11 +332,52 @@ export class AvatarStage {
     if (!action || action === this.action) return;
     // A generated track is minutes of one talk; restarting it at frame 0 on every answer
     // replays the same opening gestures each time. It resumes where the last answer left it.
-    const resume = action === this.generated ? action.time : 0;
+    let resume = action === this.generated ? action.time : 0;
+    const pose = this.action ? this.watchedPose() : null;
+    if (pose && action === this.generated && this.generatedTrack) {
+      // Resume near where the last answer left off, at the frame nearest the current pose.
+      const track = this.generatedTrack;
+      resume = matchFrame(track, pose, Math.floor(resume * track.fps) % track.frames).frame / track.fps;
+    }
     action.reset(); action.time = resume; action.play();
-    if (this.action) this.action.crossFadeTo(action, FADE, false);
+    if (this.action) {
+      const fade = pose ? fadeFor(this.poseGap(pose, action.getClip(), resume)) : FADE;
+      this.action.crossFadeTo(action, fade, false);
+      this.lastFade = fade;
+    }
     this.action = action;
     if (this.options.reduced?.()) this.still();
+  }
+
+  /** The length of the last crossfade, in seconds (for tests and the QA hook). */
+  lastFade = 0;
+
+  /** The watched bones' local rotations as the body stands now (the mixed pose of the last frame). */
+  private watchedPose(): Map<string, number[]> | null {
+    if (!this.root) return null;
+    const pose = new Map<string, number[]>();
+    for (const name of WATCH) {
+      const bone = this.root.getObjectByName(name);
+      if (bone) pose.set(name, [bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w]);
+    }
+    return pose;
+  }
+
+  /** The largest watched-bone angle between `pose` and `clip` sampled at `at` seconds. */
+  private poseGap(pose: Map<string, number[]>, clip: THREE.AnimationClip, at: number): number {
+    let gap = 0;
+    const out = new Float32Array(4);
+    for (const track of clip.tracks) {
+      if (!track.name.endsWith('.quaternion')) continue;
+      const q = pose.get(track.name.slice(0, -'.quaternion'.length));
+      if (!q) continue;
+      // three.js sets createInterpolant per track at runtime; its typings leave it out.
+      const interpolant = (track as unknown as { createInterpolant(): THREE.Interpolant }).createInterpolant();
+      const v = interpolant.evaluate(Math.min(at, clip.duration));
+      out.set(v.subarray(0, 4));
+      gap = Math.max(gap, quatAngle(q, out));
+    }
+    return gap;
   }
 
   /**
@@ -426,6 +520,7 @@ export class AvatarStage {
         const action = this.mixer!.clipAction(clip).setLoop(THREE.LoopRepeat, Infinity);
         this.actions.set('speaking', action);
         this.generated = action;
+        this.generatedTrack = this.options.track;
       }
       if (this.mixer) this.play(this.actions.get('idle') ?? this.speaking[this.speakIndex] ?? this.actions.get('speaking'));
       for (const n of TOES) { const b = this.root.getObjectByName(n); if (b) this.toes.push(b); }
