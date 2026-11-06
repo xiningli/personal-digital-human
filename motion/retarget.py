@@ -84,6 +84,32 @@ def align(from_dir: np.ndarray, to_dir: np.ndarray) -> np.ndarray:
     return np.eye(3) + vx + vx @ vx / (1 + c)
 
 
+# Hinge joints: (proximal bone, distal bone) -> flexion axis in the rig's proximal-bone frame
+# at bind, and in SMPL-X's joint frame. Both oriented so a positive rotation is anatomical
+# flexion. Calibrated by joint_limits.py (2026-11-06): the rig's from its own Mixamo clips,
+# SMPL-X's from 8 BEAT2 mocap clips.
+#
+# Why: aligning only the bone direction (align() below) leaves each bone's roll about its
+# own axis wherever the minimal rotation puts it. For the upper arm and thigh that roll is
+# where the elbow crease and kneecap face, so the rig ended up bending its left knee 13 deg
+# and left elbow 16 deg out of the plane its mesh is built to bend in, already in the
+# neutral pose. Fixing the roll so the two hinge axes coincide removes that.
+HINGES = {
+    ("LeftArm", "LeftForeArm"): ([-0.02, 0.10, 0.99], [0.09, -0.93, 0.36]),
+    ("RightArm", "RightForeArm"): ([-0.02, -0.10, -0.99], [0.01, 0.92, -0.39]),
+    ("LeftUpLeg", "LeftLeg"): ([-0.99, 0.02, 0.11], [0.99, -0.11, 0.02]),
+    ("RightUpLeg", "RightLeg"): ([-0.98, -0.03, -0.20], [1.00, 0.04, -0.03]),
+}
+
+
+def triad(d: np.ndarray, h: np.ndarray) -> np.ndarray:
+    """Orthonormal frame (columns) from a bone direction and a second axis made perpendicular to it."""
+    e1 = d / np.linalg.norm(d)
+    e2 = h - np.dot(h, e1) * e1
+    e2 /= np.linalg.norm(e2)
+    return np.stack([e1, e2, np.cross(e1, e2)], axis=1)
+
+
 def joint_map() -> dict[int, str]:
     out = dict(BODY)
     for side, base in (("Left", 25), ("Right", 40)):
@@ -185,6 +211,14 @@ def neutral_orientations(rest, rest_pos, mapping, src_rest_pos, src_parents) -> 
             out[bone] = bind
             continue
         out[bone] = align(d_rig, d_src) @ bind
+        # hinge bones: also fix the roll so the rig's flexion axis lands on the source's
+        for (prox, dist), (h_rig, h_src) in HINGES.items():
+            if bone not in (prox, dist) or prox not in rest:
+                continue
+            h_local = np.asarray(h_rig, float)
+            if bone == dist:                                   # carry the axis into the distal frame
+                h_local = bind.T @ rest[prox] @ h_local
+            out[bone] = triad(d_src, np.asarray(h_src, float)) @ triad(bind.T @ d_rig, h_local).T
     return out
 
 
