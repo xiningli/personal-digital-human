@@ -131,3 +131,13 @@ a 30 s TED segment, worst limb error 0.03°, all metric gates pass, foot float 2
 Fingers/jaw/eyes come out zero (GVHMR predicts no hands/face), so extracted clips read as
 arm-and-torso gesture over the rig's bind hands. Preview any track in the browser with the
 dev page `/player-check?track=<name>` (reads `public/motion/<name>.track.json`).
+
+## Shot seams: velocity-continuous
+
+`smooth_seams.py <track.json> <shots.json>` runs on a shot-aware (stitched) track before
+refine and ground (wired in `lib/profiles.ts`). extract_shots.py's 0.4 s half-rate linear
+slerp leaves an on/off step in angular velocity at every seam; measured on the TEDx stage
+track (2026-11-06), seam peaks of the body bones were 27–104 rad/s² against a p99 of 29
+elsewhere. Each seam's ±0.6 s is replaced by a cubic Hermite in rotation-vector space with
+the end velocities of the frames outside it: seam peaks 4–18 rad/s², check_track still PASS,
+ZMP outside the feet 0.34 % → 0.11 % of frames.

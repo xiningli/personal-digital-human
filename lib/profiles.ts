@@ -123,6 +123,9 @@ async function extract(profile: MotionProfile, opts: { start?: number; duration?
     // fails the profile.
     try {
       await fs.copyFile(track, path.join(dir, "track.unrefined.json"));
+      // A stitched (shot-aware) track gets its seams made velocity-continuous first, so refine
+      // and ground work from rotations without the stitch's on/off velocity steps.
+      if (shotAware) await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "smooth_seams.py"), track, path.join(dir, "shots.json")], MOTION);
       await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "refine_track.py"), track], MOTION);
       await runStep(log, path.join(MOTION, ".venv", "bin", "python"), [path.join(MOTION, "ground_track.py"), track], MOTION);
     } catch (e) {
